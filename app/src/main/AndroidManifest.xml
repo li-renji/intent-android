@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  起点OS mini —— 非 root proot 用户态容器。
+  声明 INTERNET 权限：奇点OS 微服务模块（microsrv.qds）需要在
+  容器内监听 127.0.0.1:8822 提供本机回环服务，Android 无此权限时
+  AF_INET socket 会直接返回 EPERM。
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <!-- 投屏/远程控制 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+
+    <application
+        android:allowBackup="false"
+        android:icon="@mipmap/ic_launcher"
+        android:label="起点OS mini"
+        android:supportsRtl="true"
+        android:theme="@android:style/Theme.Material.NoActionBar">
+
+        <!-- 开机动画：全屏横屏播放 boot_animation.mp4，完成后跳转到 MainActivity -->
+        <activity
+            android:name=".SplashActivity"
+            android:exported="true"
+            android:screenOrientation="landscape"
+            android:theme="@android:style/Theme.Material.NoActionBar.Fullscreen">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- 主 Activity：WebView 界面 + proot 容器，方向由代码控制 -->
+        <activity
+            android:name=".MainActivity"
+            android:exported="false"
+            android:screenOrientation="unspecified"
+            android:theme="@android:style/Theme.Material.NoActionBar.Fullscreen" />
+
+        <!-- 远程投屏与控制服务 -->
+        <service
+            android:name=".RemoteCastService"
+            android:exported="false"
+            android:foregroundServiceType="mediaProjection" />
+    </application>
+
+</manifest>

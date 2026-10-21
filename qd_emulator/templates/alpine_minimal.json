@@ -1,0 +1,52 @@
+{
+  "name": "alpine-minimal",
+  "id": "vm-alpine-001",
+  "os": "alpine",
+  "arch": "x86_64",
+  "description": "Alpine Linux 最小系统，用于第一阶段验证",
+  "cpu": {
+    "cores": 2,
+    "sockets": 1,
+    "threads_per_core": 1
+  },
+  "memory": {
+    "size_mb": 512
+  },
+  "disk": {
+    "path": "images/alpine-minimal.qcow2",
+    "size_gb": 4,
+    "interface": "virtio",
+    "format": "qcow2"
+  },
+  "cdrom": {
+    "path": "rootfs/minimal/alpine-virt.iso",
+    "enabled": true
+  },
+  "boot": {
+    "order": "dc"
+  },
+  "network": {
+    "mode": "user",
+    "port_forwards": [
+      { "host": 2222, "guest": 22, "protocol": "tcp" },
+      { "host": 5555, "guest": 5555, "protocol": "tcp" }
+    ]
+  },
+  "display": {
+    "type": "gtk",
+    "graphics": "std"
+  },
+  "serial": {
+    "type": "stdio",
+    "enabled": true
+  },
+  "qmp": {
+    "enabled": true,
+    "host": "127.0.0.1",
+    "port": 4444
+  },
+  "shared_folders": [],
+  "clipboard_sync": false,
+  "autostart": false,
+  "accelerator": "whpx"
+}

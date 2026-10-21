@@ -1,0 +1,47 @@
+plugins {
+    id 'com.android.application'
+    id 'org.jetbrains.kotlin.android'
+}
+
+android {
+    namespace 'com.qidian.minios'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "com.qidian.minios"
+        minSdk 24          // proot/talloc 按 API 24 构建
+        targetSdk 34
+        versionCode 1
+        versionName "0.1.0"
+
+        // 只支持 arm64（proot 只按 aarch64 构建）
+        ndk {
+            abiFilters 'arm64-v8a'
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+    kotlinOptions {
+        jvmTarget = '17'
+    }
+
+    // libproot.so 由 scripts/build_proot_android.sh 生成到 jniLibs/arm64-v8a
+    packaging {
+        jniLibs {
+            useLegacyPackaging = true
+        }
+    }
+}
+
+dependencies {
+    // 无第三方依赖：纯 Android 框架 API + Kotlin 标准库
+}

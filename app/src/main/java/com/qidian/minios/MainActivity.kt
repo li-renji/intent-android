@@ -1,0 +1,771 @@
+package com.qidian.minios
+
+import android.app.Activity
+import android.os.Bundle
+import android.util.Log
+import android.webkit.JavascriptInterface
+import android.webkit.WebChromeClient
+import android.webkit.WebView
+import android.webkit.WebViewClient
+import android.content.Intent
+import android.content.pm.PackageManager
+import java.io.File
+import java.io.FileInputStream
+
+/**
+ * 起点OS mini —— WebView 壳 + AI 可修改界面。
+ *
+ * 界面不打包在 APK 里，放在 files/ui/ 目录（HTML/CSS/JS 纯文本）。
+ * AI 可以直接修改这些文件，WebView 实时刷新，用户立即看到效果，无需重装。
+ *
+ * 启动流程：
+ *   1. 首次启动从 assets/ui/ 复制默认界面到 files/ui/
+ *   2. 设置全屏 WebView，加载 files/ui/index.html
+ *   3. 暴露 Qidian JS 接口给界面调用
+ *   4. 后台线程启动 proot 容器 + MNN AI 服务
+ */
+class MainActivity : Activity() {
+
+    companion object {
+        private const val TAG = "QidianMiniOS"
+        private const val ROOTFS_ASSET = "rootfs.tar"
+        private const val SHM_NAME = "shm/shm.dat"
+
+        @Volatile
+        private var containerStarted = false
+
+        // 投屏授权全局变量
+        @Volatile
+        var castResultCodeGlobal = 0
+        @Volatile
+        var castDataGlobal: Intent? = null
+    }
+
+    lateinit var webView: WebView
+
+    @Volatile
+    private var aiService: AiService? = null
+
+    @Volatile
+    private var containerReady = false
+
+    @Volatile
+    private var microsrvReady = false
+
+    @Volatile
+    private var rootfsDir: File? = null
+    @Volatile
+    private var shmFile: File? = null
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+
+        // 系统背景纯黑
+        window.decorView.setBackgroundColor(android.graphics.Color.BLACK)
+
+        // 沉浸式全屏：隐藏状态栏和导航栏，撑满整个屏幕
+        window.decorView.systemUiVisibility = (
+            android.view.View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                or android.view.View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                or android.view.View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                or android.view.View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                or android.view.View.SYSTEM_UI_FLAG_FULLSCREEN
+                or android.view.View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+        )
+
+        // 初始化 WebView
+        setupWebView()
+
+        // 复制默认界面（首次启动）
+        copyDefaultUI()
+
+        // 读取保存的屏幕方向
+        val prefs = getSharedPreferences("settings", MODE_PRIVATE)
+        val savedOrientation = prefs.getString("orientation", "landscape")
+        if (savedOrientation == "portrait") {
+            requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+        } else {
+            requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+        }
+
+        // 加载界面
+        val uiDir = File(filesDir, "ui")
+        webView.loadUrl("file://${uiDir.absolutePath}/index.html")
+
+        // 后台启动容器 + AI
+        if (!containerStarted) {
+            containerStarted = true
+            startContainerInBackground()
+        }
+    }
+
+    /** 设置 WebView */
+    private fun setupWebView() {
+        webView = WebView(this)
+        setContentView(webView)
+
+        webView.settings.apply {
+            javaScriptEnabled = true
+            domStorageEnabled = true
+            databaseEnabled = true
+            allowFileAccess = true
+            allowContentAccess = true
+            mediaPlaybackRequiresUserGesture = false
+            mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+            cacheMode = android.webkit.WebSettings.LOAD_DEFAULT
+            useWideViewPort = true
+            loadWithOverviewMode = true
+            setSupportZoom(true)
+            builtInZoomControls = true
+            displayZoomControls = false
+        }
+
+        webView.webViewClient = object : WebViewClient() {
+            override fun shouldOverrideUrlLoading(view: android.webkit.WebView?, request: android.webkit.WebResourceRequest?): Boolean {
+                val url = request?.url?.toString() ?: return false
+                // 拦截自定义 scheme，防止 ERR_UNKNOWN_URL_SCHEME
+                if (!url.startsWith("http://") && !url.startsWith("https://") && !url.startsWith("file://")) {
+                    Log.i(TAG, "拦截自定义 scheme: $url")
+                    return true // 不加载，不跳转
+                }
+                return false
+            }
+            override fun onReceivedError(view: android.webkit.WebView?, request: android.webkit.WebResourceRequest?, error: android.webkit.WebResourceError?) {
+                Log.w(TAG, "WebView 错误: ${error?.description} url=${request?.url}")
+            }
+        }
+        webView.webChromeClient = WebChromeClient()
+
+        // 暴露 JS 接口
+        webView.addJavascriptInterface(QidianJSInterface(this), "Qidian")
+    }
+
+    /** 从 assets/ui/ 复制默认界面到 files/ui/ */
+    private fun copyDefaultUI() {
+        val uiDir = File(filesDir, "ui")
+        uiDir.mkdirs()
+
+        // 读取 APK 内置的界面版本号
+        val assetVersion = try {
+            assets.open("ui/ui_version.txt").bufferedReader().use { it.readText().trim() }
+        } catch (e: Exception) { "unknown" }
+
+        // 读取当前已安装的界面版本号
+        val localVersionFile = File(uiDir, "ui_version.txt")
+        val localVersion = if (localVersionFile.exists()) localVersionFile.readText().trim() else "none"
+
+        // 版本一致且文件存在，跳过
+        if (localVersion == assetVersion && File(uiDir, "index.html").exists()) {
+            Log.i(TAG, "界面版本一致($assetVersion)，跳过复制")
+            return
+        }
+
+        Log.i(TAG, "界面版本变化: $localVersion -> $assetVersion，开始更新界面")
+
+        val uiAssets = listOf("index.html", "style.css", "app.js", "ui_version.txt")
+        for (name in uiAssets) {
+            try {
+                assets.open("ui/$name").use { input ->
+                    File(uiDir, name).outputStream().use { out ->
+                        input.copyTo(out)
+                    }
+                }
+                Log.i(TAG, "复制界面文件: $name")
+            } catch (e: Exception) {
+                Log.e(TAG, "复制界面文件失败: $name", e)
+            }
+        }
+
+        // 创建备份目录
+        File(uiDir, "backups").mkdirs()
+    }
+
+    /** 后台启动容器 + AI 服务 */
+    private fun startContainerInBackground() {
+        Thread {
+            try {
+                val diag = File(filesDir, "diag.txt").apply {
+                    writeText("start ${System.currentTimeMillis()}\n")
+                }
+
+                // 初始化共享内存通道
+                shmFile = File(filesDir, SHM_NAME)
+                val channel = ShmChannel(shmFile!!)
+                if (!channel.open()) {
+                    diag.appendText("shm init FAILED\n")
+                    throw IllegalStateException("共享内存通道初始化失败")
+                }
+                diag.appendText("shm=$shmFile\n")
+
+                // 启动 MNN AI 服务
+                val mnnModelDir = File(filesDir, "models/qwen2.5-1.5b-mnn")
+                aiService = if (mnnModelDir.exists() && File(mnnModelDir, "config.json").exists()) {
+                    val svc = AiService(this, mnnModelDir, shmFile!!, maxTokens = 256)
+                    if (svc.start(diag)) {
+                        diag.appendText("原生 AI 服务(MNN)已启动\n")
+                        svc
+                    } else {
+                        diag.appendText("原生 AI 服务启动失败\n")
+                        null
+                    }
+                } else {
+                    diag.appendText("MNN 模型目录未就绪，使用占位推理\n")
+                    null
+                }
+
+                // 解压 rootfs
+                rootfsDir = File(filesDir, "rootfs")
+                if (!File(rootfsDir, "bin").exists()) {
+                    Log.i(TAG, "首次启动：解压 rootfs ...")
+                    extractRootfs(rootfsDir!!)
+                }
+                diag.appendText("rootfs ready\n")
+                containerReady = true  // rootfs 就绪，可执行容器命令
+
+                val proot = nativeProot()
+
+                // 启动容器（后台验证）
+                val exit = startContainer(rootfsDir!!, proot, shmFile!!, diag)
+                Log.i(TAG, "proot 已退出，exit=$exit")
+                diag.appendText("proot exit=$exit\n")
+
+                // 注意：不停止 AI 服务，让它常驻供界面调用
+                // aiService?.stop()  ← 移除，AI 服务需要常驻
+                // channel.close()  ← 移除，共享内存通道保持打开
+            } catch (t: Throwable) {
+                Log.e(TAG, "容器启动失败", t)
+                try {
+                    File(filesDir, "fatal.txt").writeText(
+                        "$t\n" + t.stackTrace.joinToString("\n") { "  at $it" }
+                    )
+                } catch (ignore: Throwable) {}
+            }
+        }.apply {
+            name = "proot-container"
+            start()
+        }
+    }
+
+    /** 解压 rootfs */
+    private fun extractRootfs(rootfs: File) {
+        val cache = File(cacheDir, ROOTFS_ASSET)
+        assets.open(ROOTFS_ASSET).use { input ->
+            cache.outputStream().use { out -> input.copyTo(out) }
+        }
+        try {
+            val isGzip = FileInputStream(cache).use { ins ->
+                val magic = ByteArray(2)
+                ins.read(magic) == 2 && magic[0] == 0x1f.toByte() && magic[1] == 0x8b.toByte()
+            }
+            if (isGzip) {
+                TarExtractor.extractTarGz(cache, rootfs)
+            } else {
+                FileInputStream(cache).use { ins -> TarExtractor.extractTar(ins, rootfs) }
+            }
+        } catch (t: Throwable) {
+            rootfs.deleteRecursively()
+            throw t
+        } finally {
+            cache.delete()
+        }
+    }
+
+    /** 定位 proot 二进制 */
+    private fun nativeProot(): File {
+        val proot = File(applicationInfo.nativeLibraryDir, "lib__bin__proot-classic__.so")
+        if (!proot.exists() || proot.length() == 0L) {
+            throw IllegalStateException("nativeLibraryDir 中缺少 proot: $proot")
+        }
+        return proot
+    }
+
+    /** 启动容器验证 */
+    private fun startContainer(rootfs: File, proot: File, shmFile: File, diag: File): Int {
+        val logFile = File(filesDir, "proot.log")
+        val nativeDir = applicationInfo.nativeLibraryDir
+        val shmDir = shmFile.parentFile!!
+
+        val guestCommand =
+            "nohup /系统/微服务.qd/microsrv.qds >/tmp/microsrv.log 2>&1 & sleep 1; " +
+            "echo '=== 奇点OS 容器启动完成 ===' > /container_result.txt; " +
+            "echo '系统模块:' >> /container_result.txt; " +
+            "ls /系统 >> /container_result.txt 2>&1; " +
+            "echo 'AI模块:' >> /container_result.txt; " +
+            "ls /AI.qd >> /container_result.txt 2>&1; " +
+            "echo '== container ready ==' >> /container_result.txt"
+
+        val argv = listOf(
+            proot.absolutePath,
+            "--link2symlink", "-0",
+            "-r", rootfs.absolutePath,
+            "-b", "/dev", "-b", "/proc", "-b", "/sys",
+            "-b", "${shmDir.absolutePath}:/shm",
+            "-w", "/",
+            "/bin/sh", "-c", guestCommand
+        )
+
+        val loader = File(nativeDir, "libproot-loader-aarch64-5.1.107-92.so")
+        val loader32 = File(nativeDir, "libproot-loader32-aarch64-5.1.107-92.so")
+        val tmpDir = File(filesDir, "proot_tmp").apply { mkdirs() }
+
+        val env = mutableMapOf(
+            "PATH" to "/system/bin:/system/xbin:/bin:/usr/bin",
+            "LD_LIBRARY_PATH" to nativeDir,
+            "PROOT_LOADER" to loader.absolutePath,
+            "PROOT_LOADER_32" to loader32.absolutePath,
+            "PROOT_TMP_DIR" to tmpDir.absolutePath,
+            "HOME" to "/root",
+            "LANG" to "C.UTF-8",
+            "TMPDIR" to tmpDir.absolutePath
+        )
+
+        return try {
+            val process = ProcessBuilder(argv)
+                .redirectErrorStream(true)
+                .redirectOutput(logFile)
+                .apply { environment().putAll(env) }
+                .start()
+            process.waitFor()
+        } catch (t: Throwable) {
+            diag.appendText("EXCEPTION: $t\n")
+            throw t
+        }
+    }
+
+    /** 运行时权限请求结果 */
+    private val permissionResults = mutableMapOf<String, Boolean>()
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        permissions.forEachIndexed { index, perm ->
+            permissionResults[perm] = grantResults[index] == PackageManager.PERMISSION_GRANTED
+            Log.i(TAG, "权限结果: $perm = ${grantResults[index] == PackageManager.PERMISSION_GRANTED}")
+        }
+    }
+
+    /** 请求运行时权限（供 JS 接口调用） */
+    fun requestPermission(type: String): String {
+        val permission = when (type) {
+            "location" -> android.Manifest.permission.ACCESS_FINE_LOCATION
+            "microphone" -> android.Manifest.permission.RECORD_AUDIO
+            "camera" -> android.Manifest.permission.CAMERA
+            else -> return "未知权限类型: $type"
+        }
+
+        // 检查是否已经授权
+        if (checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED) {
+            return "已授权: $type"
+        }
+
+        // 请求权限（异步，系统弹窗）
+        requestPermissions(arrayOf(permission), 1001)
+        return "已弹出权限请求，请在系统对话框中选择"
+    }
+
+    /** 在容器内执行命令，返回输出 */
+    fun execInContainer(cmd: String): String {
+        val rootfs = rootfsDir ?: return "[容器未启动]"
+        val shm = shmFile ?: return "[共享内存未初始化]"
+        val nativeDir = applicationInfo.nativeLibraryDir
+        val shmDir = shm.parentFile!!
+        val proot = nativeProot()
+        val loader = File(nativeDir, "libproot-loader-aarch64-5.1.107-92.so")
+        val loader32 = File(nativeDir, "libproot-loader32-aarch64-5.1.107-92.so")
+        val tmpDir = File(filesDir, "proot_tmp").apply { mkdirs() }
+
+        val env = mutableMapOf(
+            "PATH" to "/system/bin:/system/xbin:/bin:/usr/bin",
+            "LD_LIBRARY_PATH" to nativeDir,
+            "PROOT_LOADER" to loader.absolutePath,
+            "PROOT_LOADER_32" to loader32.absolutePath,
+            "PROOT_TMP_DIR" to tmpDir.absolutePath,
+            "HOME" to "/root",
+            "LANG" to "C.UTF-8",
+            "TMPDIR" to tmpDir.absolutePath
+        )
+
+        val argv = listOf(
+            proot.absolutePath,
+            "--link2symlink", "-0",
+            "-r", rootfs.absolutePath,
+            "-b", "/dev", "-b", "/proc", "-b", "/sys",
+            "-b", "${shmDir.absolutePath}:/shm",
+            "-w", "/",
+            "/bin/sh", "-c", cmd
+        )
+
+        return try {
+            val process = ProcessBuilder(argv)
+                .apply { environment().putAll(env) }
+                .start()
+            val output = process.inputStream.bufferedReader().readText()
+            process.waitFor()
+            output.trim()
+        } catch (t: Throwable) {
+            "[执行失败] ${t.message}"
+        }
+    }
+
+    /** JS 接口 */
+    class QidianJSInterface(private val activity: MainActivity) {
+
+        @JavascriptInterface
+        fun getStatus(): String {
+            val aiReady = activity.aiService != null
+            val container = activity.containerReady
+            val microsrv = activity.microsrvReady
+            return "{\"container\":$container,\"ai\":$aiReady,\"microsrv\":$microsrv}"
+        }
+
+        @JavascriptInterface
+        fun requestPermission(type: String): String {
+            return activity.requestPermission(type)
+        }
+
+        @JavascriptInterface
+        fun checkPermission(type: String): String {
+            val permission = when (type) {
+                "location" -> android.Manifest.permission.ACCESS_FINE_LOCATION
+                "microphone" -> android.Manifest.permission.RECORD_AUDIO
+                "camera" -> android.Manifest.permission.CAMERA
+                else -> return "未知权限类型"
+            }
+            val granted = activity.checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED
+            return if (granted) "已授权" else "未授权"
+        }
+
+        @JavascriptInterface
+        fun checkModelExists(): String {
+            val modelDir = java.io.File(activity.filesDir, "models/qwen2.5-1.5b-mnn")
+            val weightFile = java.io.File(modelDir, "llm.mnn.weight")
+            val configFile = java.io.File(modelDir, "config.json")
+            val exists = weightFile.exists() && configFile.exists()
+            val sizeMB = if (weightFile.exists()) weightFile.length() / 1024 / 1024 else 0
+            return "{\"exists\":$exists,\"sizeMB\":$sizeMB,\"path\":\"${modelDir.absolutePath}\"}"
+        }
+
+        @JavascriptInterface
+        fun openExternalUrl(url: String) {
+            try {
+                val intent = android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url))
+                activity.startActivity(intent)
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+
+        @JavascriptInterface
+        fun setOrientation(orientation: String) {
+            activity.runOnUiThread {
+                try {
+                    val prefs = activity.getSharedPreferences("settings", MODE_PRIVATE)
+                    prefs.edit().putString("orientation", orientation).apply()
+                    if (orientation == "portrait") {
+                        activity.requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+                        Log.i(TAG, "切换竖屏")
+                    } else {
+                        activity.requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+                        Log.i(TAG, "切换横屏")
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "切换屏幕方向失败", e)
+                }
+            }
+        }
+
+        @JavascriptInterface
+        fun saveChatFile(content: String) {
+            try {
+                val file = java.io.File(activity.filesDir, "chat_history.json")
+                file.writeText(content, Charsets.UTF_8)
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+
+        @JavascriptInterface
+        fun loadChatFile(): String {
+            return try {
+                val file = java.io.File(activity.filesDir, "chat_history.json")
+                if (file.exists()) file.readText(Charsets.UTF_8) else "[]"
+            } catch (e: Exception) {
+                "[]"
+            }
+        }
+
+        @JavascriptInterface
+        fun execContainer(cmd: String): String {
+            return activity.execInContainer(cmd)
+        }
+
+        @JavascriptInterface
+        fun callAI(prompt: String): String {
+            return try {
+                val svc = activity.aiService
+                if (svc != null) {
+                    Log.i(TAG, "AI 推理调用，prompt 长度=${prompt.length}")
+                    val result = svc.inferSync(prompt)
+                    Log.i(TAG, "AI 推理完成，结果长度=${result?.length ?: 0}")
+                    result ?: "[AI 空回复]"
+                } else {
+                    Log.w(TAG, "AI 服务未就绪，aiService=null")
+                    "[AI 正在加载中，请稍候再试...]"
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "AI 调用失败", e)
+                "[AI 调用失败] ${e.message}"
+            }
+        }
+
+        @JavascriptInterface
+        fun callCloudAI(baseUrl: String, apiKey: String, model: String, prompt: String): String {
+            return try {
+                Log.i(TAG, "云端 API 调用: baseUrl=$baseUrl model=$model")
+                val url = java.net.URL("${baseUrl.trimEnd('/')}/chat/completions")
+                val conn = url.openConnection() as java.net.HttpURLConnection
+                conn.requestMethod = "POST"
+                conn.connectTimeout = 30000
+                conn.readTimeout = 60000
+                conn.doOutput = true
+                conn.setRequestProperty("Content-Type", "application/json")
+                conn.setRequestProperty("Authorization", "Bearer $apiKey")
+
+                // 构建请求体（简化为单轮对话）
+                val body = """{
+                    "model": "$model",
+                    "messages": [{"role": "user", "content": ${org.json.JSONObject.quote(prompt)}}],
+                    "max_tokens": 1024,
+                    "temperature": 0.7
+                }"""
+                conn.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
+
+                val responseCode = conn.responseCode
+                val responseBody = if (responseCode == 200) {
+                    conn.inputStream.bufferedReader().use { it.readText() }
+                } else {
+                    conn.errorStream?.bufferedReader()?.use { it.readText() } ?: "HTTP $responseCode"
+                }
+                Log.i(TAG, "云端 API 响应: code=$responseCode length=${responseBody.length}")
+
+                // 解析 OpenAI 兼容格式
+                val json = org.json.JSONObject(responseBody)
+                val choices = json.getJSONArray("choices")
+                if (choices.length() > 0) {
+                    choices.getJSONObject(0).getJSONObject("message").getString("content")
+                } else {
+                    "[云端 API 无回复] $responseBody"
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "云端 API 调用失败", e)
+                "[云端 API 调用失败] ${e.message}"
+            }
+        }
+
+        @JavascriptInterface
+        fun launchApp(packageName: String): String {
+            return try {
+                val intent = activity.packageManager.getLaunchIntentForPackage(packageName)
+                if (intent != null) {
+                    intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    activity.startActivity(intent)
+                    "已启动: $packageName"
+                } else {
+                    "未找到应用: $packageName"
+                }
+            } catch (e: Exception) {
+                "启动失败: ${e.message}"
+            }
+        }
+
+        @JavascriptInterface
+        fun readUIFile(name: String): String {
+            return try {
+                val file = File(activity.filesDir, "ui/$name")
+                if (file.exists()) file.readText() else ""
+            } catch (e: Exception) {
+                ""
+            }
+        }
+
+        @JavascriptInterface
+        fun writeUIFile(name: String, content: String) {
+            try {
+                val uiDir = File(activity.filesDir, "ui")
+                uiDir.mkdirs()
+                // 安全检查：防止路径穿越
+                val safeName = name.replace("..", "").trimStart('/')
+                val file = File(uiDir, safeName)
+                file.parentFile?.mkdirs()
+                file.writeText(content)
+                Log.i(TAG, "写入界面文件: $safeName (${content.length} bytes)")
+            } catch (e: Exception) {
+                Log.e(TAG, "写入界面文件失败: $name", e)
+            }
+        }
+
+        @JavascriptInterface
+        fun reloadUI() {
+            activity.runOnUiThread {
+                activity.webView.reload()
+            }
+        }
+
+        @JavascriptInterface
+        fun resetUI() {
+            try {
+                val uiDir = File(activity.filesDir, "ui")
+                // 备份当前界面
+                val backupDir = File(uiDir, "backups/manual_reset_${System.currentTimeMillis()}")
+                backupDir.mkdirs()
+                listOf("index.html", "style.css", "app.js").forEach { name ->
+                    val f = File(uiDir, name)
+                    if (f.exists()) f.copyTo(File(backupDir, name))
+                }
+                // 重新从 assets 复制
+                listOf("index.html", "style.css", "app.js").forEach { name ->
+                    activity.assets.open("ui/$name").use { input ->
+                        File(uiDir, name).outputStream().use { out -> input.copyTo(out) }
+                    }
+                }
+                activity.runOnUiThread {
+                    activity.webView.reload()
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "恢复默认界面失败", e)
+            }
+        }
+
+        @JavascriptInterface
+        fun getSystemInfo(): String {
+            return try {
+                val sb = StringBuilder()
+                sb.appendLine("容器状态: ${if (activity.rootfsDir?.exists() == true) "运行中" else "未启动"}")
+                sb.appendLine("AI 引擎: ${if (activity.aiService != null) "MNN (Qwen2.5-1.5B)" else "未就绪"}")
+                sb.appendLine("模型路径: ${activity.filesDir}/models/qwen2.5-1.5b-mnn")
+                sb.toString()
+            } catch (e: Exception) {
+                "获取系统信息失败"
+            }
+        }
+
+        // ========== 投屏/远程控制 ==========
+
+        @JavascriptInterface
+        fun requestCastPermission(): String {
+            // 请求 MediaProjection 权限
+            return try {
+                val mpm = activity.getSystemService(android.content.Context.MEDIA_PROJECTION_SERVICE) as android.media.projection.MediaProjectionManager
+                val intent = mpm.createScreenCaptureIntent()
+                activity.startActivityForResult(intent, 1001)
+                "正在请求投屏权限..."
+            } catch (e: Exception) {
+                "请求投屏权限失败: ${e.message}"
+            }
+        }
+
+        @JavascriptInterface
+        fun startCast(port: Int): String {
+            return try {
+                if (castResultCodeGlobal == 0 || castDataGlobal == null) {
+                    return "请先请求投屏权限"
+                }
+                val intent = Intent(activity, RemoteCastService::class.java)
+                intent.putExtra("action", "start")
+                intent.putExtra("port", port)
+                intent.putExtra("resultCode", castResultCodeGlobal)
+                intent.putExtra("data", castDataGlobal)
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                    activity.startForegroundService(intent)
+                } else {
+                    activity.startService(intent)
+                }
+                val ip = getDeviceIP()
+                "投屏已启动: http://$ip:$port"
+            } catch (e: Exception) {
+                "启动投屏失败: ${e.message}"
+            }
+        }
+
+        @JavascriptInterface
+        fun stopCast(): String {
+            return try {
+                val intent = Intent(activity, RemoteCastService::class.java)
+                intent.putExtra("action", "stop")
+                activity.startService(intent)
+                "投屏已停止"
+            } catch (e: Exception) {
+                "停止投屏失败: ${e.message}"
+            }
+        }
+
+        @JavascriptInterface
+        fun getCastStatus(): String {
+            return try {
+                val ip = getDeviceIP()
+                "{\"ip\":\"$ip\",\"port\":8080,\"status\":\"ready\"}"
+            } catch (e: Exception) {
+                "{\"error\":\"${e.message}\"}"
+            }
+        }
+
+        @JavascriptInterface
+        fun getDeviceIP(): String {
+            return try {
+                val interfaces = java.net.NetworkInterface.getNetworkInterfaces()
+                while (interfaces.hasMoreElements()) {
+                    val iface = interfaces.nextElement()
+                    if (iface.isLoopback || !iface.isUp) continue
+                    val addresses = iface.inetAddresses
+                    while (addresses.hasMoreElements()) {
+                        val addr = addresses.nextElement()
+                        if (!addr.isLoopbackAddress && addr is java.net.Inet4Address) {
+                            return addr.hostAddress
+                        }
+                    }
+                }
+                "127.0.0.1"
+            } catch (e: Exception) {
+                "127.0.0.1"
+            }
+        }
+    }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == 1001 && resultCode == RESULT_OK && data != null) {
+            // 保存 MediaProjection 授权结果
+            val jsInterface = webView?.let {
+                // 通过反射获取已添加的 JS 接口
+                null
+            }
+            // 直接保存到 companion object
+            castResultCodeGlobal = resultCode
+            castDataGlobal = data
+            Log.i(TAG, "投屏权限已授权")
+            webView.evaluateJavascript("if(typeof onCastPermissionGranted==='function')onCastPermissionGranted();", null)
+        }
+    }
+
+    override fun onBackPressed() {
+        // 先检查 JS 页面栈是否有可返回的页面
+        webView.evaluateJavascript("(typeof pageHistory !== 'undefined' && pageHistory.length > 0)") { result ->
+            if (result == "true") {
+                // JS 页面有上一页，返回
+                webView.evaluateJavascript("goBack()", null)
+            } else if (webView.canGoBack()) {
+                webView.goBack()
+            } else {
+                super.onBackPressed()
+            }
+        }
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        webView.destroy()
+    }
+}

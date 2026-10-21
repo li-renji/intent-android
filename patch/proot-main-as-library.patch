@@ -1,0 +1,12 @@
+diff --git a/src/cli/cli.c b/src/cli/cli.c
+--- a/src/cli/cli.c
++++ b/src/cli/cli.c
+@@ -445,7 +445,7 @@
+ 
+ bool exit_failure = true;
+ 
+-int main(int argc, char *const argv[])
++int proot_main(int argc, char *const argv[])
+ {
+ 	Tracee *tracee;
+ 	int status;

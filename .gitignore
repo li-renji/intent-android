@@ -1,0 +1,56 @@
+# ---- Android / IDE 通用 ----
+*.iml
+.gradle/
+build/
+local.properties
+.idea/
+.DS_Store
+/captures
+.externalNativeBuild
+.cxx
+
+# ---- 模型权重 ----
+models/
+
+# ---- 发布成品 ----
+releases/
+
+# ---- 运行时大资源 ----
+app/src/main/assets/rootfs.tar
+app/src/main/assets/boot_animation.mp4
+app/src/main/jniLibs/
+
+# ---- framework 构建产物与第三方 ----
+framework/build/
+framework/miniz/
+framework/shm_client
+framework/modules/intent_agent
+framework/modules/wm
+framework/modules/remote_collab
+
+# ---- 第三方依赖 ----
+llama.cpp/
+pylibs/
+
+# ---- qd_emulator 大件（仅保留 src/ 源码、文档、模板、工具脚本）----
+qd_emulator/bios/
+qd_emulator/images/
+qd_emulator/kernel/
+qd_emulator/qemu/
+qd_emulator/rootfs/
+
+# ---- 备份 / 临时 ----
+backup_*/
+.preview/
+
+# ---- 第三方打包 / 界面调试截图 ----
+llama.cpp.tar.gz
+/ui_*.png
+
+# ---- 通用二进制 / 缓存 ----
+*.so
+*.exe
+*.iso
+*.qcow2
+*.pyc
+__pycache__/
