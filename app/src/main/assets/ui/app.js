@@ -118,7 +118,23 @@ function setupHeaderButtons() {
                     renderList();
                     renderEmptyContent();
                 } else if (action === 'about') {
-                    alert('起点OS mini v1.0\n\n基于 proot 非 root 容器\n模块化系统 (.qd/.qds/.qdai)\n本地 AI: Qwen2.5-1.5B (MNN)');
+                    let apiInfo = '';
+                    try {
+                        if (window.Qidian && Qidian.getHttpInfo) {
+                            const info = JSON.parse(Qidian.getHttpInfo());
+                            if (info.listening) {
+                                apiInfo = '\n\n── 局域网 AI API ──\n'
+                                    + '地址: http://' + info.lan + '\n'
+                                    + '状态: ' + (info.ai ? '模型就绪' : '模型加载中') + '\n'
+                                    + 'POST /chat  {"prompt":"你好"}\n'
+                                    + 'GET  /health\n\n'
+                                    + '在电脑浏览器打开上面的地址可看完整用法。';
+                            } else {
+                                apiInfo = '\n\n── 局域网 AI API ──\n未启动（9999 端口被占用或启动失败）';
+                            }
+                        }
+                    } catch (e) { }
+                    alert('起点OS mini v1.0\n\n基于 proot 非 root 容器\n模块化系统 (.qd/.qds/.qdai)\n本地 AI: Qwen2.5-1.5B (MNN)' + apiInfo);
                 }
             });
         });
@@ -1543,6 +1559,57 @@ async function qdExecWithRetry(cmd, opts) {
     }
 }
 
+const QD_AI_LOAD_TIMEOUT = '[AI_LOAD_TIMEOUT]';
+
+/**
+ * 直接调用 App 内原生 MNN 推理（Qidian.callAI）。
+ * 不经过容器、不经过 proot、不经过临时文件轮询，链路最短也最稳。
+ * 模型首次加载约 2~3 秒，期间 callAI 会返回"正在加载中"，这里负责等待。
+ * qdLastNativeRaw 保存最后一次 callAI 的原始返回，便于失败时定位。
+ */
+window.qdLastNativeRaw = '';
+async function qdNativeChat(prompt, onWait) {
+    const t0 = Date.now();
+    const deadline = t0 + 60000;
+    let attempt = 0;
+
+    while (Date.now() < deadline) {
+        attempt++;
+
+        // 先问状态，避免无谓地阻塞在推理调用上
+        let aiReady = true;
+        try {
+            if (window.Qidian && Qidian.getStatus) {
+                const rawStatus = Qidian.getStatus();
+                window.qdLastStatus = rawStatus;
+                const st = JSON.parse(rawStatus);
+                if (st && st.ai === false) aiReady = false;
+            } else {
+                window.qdLastStatus = 'Qidian.getStatus 不存在';
+            }
+        } catch (e) {
+            window.qdLastNativeRaw = 'getStatus 异常: ' + e.message;
+        }
+
+        if (aiReady) {
+            try {
+                const r = Qidian.callAI(prompt);
+                const s = (r == null) ? '' : String(r);
+                window.qdLastNativeRaw = s;
+                if (s.indexOf('正在加载中') < 0 && s.indexOf('空回复') < 0) {
+                    if (s.length > 0) return s;
+                }
+            } catch (e) {
+                window.qdLastNativeRaw = 'callAI 异常: ' + e.message;
+            }
+        }
+
+        onWait(Date.now() - t0, attempt);
+        await new Promise(function (res) { setTimeout(res, 700); });
+    }
+    return QD_AI_LOAD_TIMEOUT;
+}
+
 function sendMessage() {
     const input = document.getElementById('message-input');
     const text = input.value.trim();
@@ -1584,21 +1651,30 @@ function sendMessage() {
                     typewriterEffect(aiMsg, response, 15);
                     currentChat.messages.push({ role: 'ai', content: response, thinking: '' });
                 } else {
-                    // 本地模型：通过容器内 AI.qd/ai_service.qds（INTENT Agent）执行
-                    // 决策循环在容器内运行，通过 shm 调用原生 MNN 推理
+                    // 本地模型：优先走 App 原生 MNN（Qidian.callAI），直接调 inferSync，
+                    // 不经过 proot 容器、不经过 WebView 文件轮询。
+                    // 只有老版本 APK（没有 callAI 接口）才退回容器路径。
                     const contentEl = thinkingMsg.querySelector('.message-content');
-                    if (contentEl) contentEl.textContent = '🧠 正在连接容器...';
+                    const hasNativeAI = !!(window.Qidian && typeof Qidian.callAI === 'function');
+                    let result;
 
-                    // 转义用户输入中的单引号
-                    const escapedText = text.replace(/'/g, "'\\''");
-                    const cmd = "/AI.qd/ai_service.qds /shm/shm.dat '" + escapedText + "'";
-                    // 容器未就绪时自动等待重试（拔线后系统清理后台、容器重建期间会命中）
-                    const result = await qdExecWithRetry(cmd, {
-                        timeoutMs: 90000,
-                        onWait: function (ms) {
-                            if (contentEl) contentEl.textContent = '⏳ 容器启动中… ' + Math.round(ms / 1000) + 's';
-                        }
-                    });
+                    if (hasNativeAI) {
+                        if (contentEl) contentEl.textContent = '🧠 本地模型推理中…';
+                        result = await qdNativeChat(text, function (ms) {
+                            if (contentEl) contentEl.textContent = '⏳ 模型加载中… ' + Math.round(ms / 1000) + 's';
+                        });
+                    } else {
+                        if (contentEl) contentEl.textContent = '🧠 正在连接容器...';
+                        // 转义用户输入中的单引号
+                        const escapedText = text.replace(/'/g, "'\\''");
+                        const cmd = "/AI.qd/ai_service.qds /shm/shm.dat '" + escapedText + "'";
+                        result = await qdExecWithRetry(cmd, {
+                            timeoutMs: 90000,
+                            onWait: function (ms) {
+                                if (contentEl) contentEl.textContent = '⏳ 容器启动中… ' + Math.round(ms / 1000) + 's';
+                            }
+                        });
+                    }
 
                     // 移除思考中消息
                     thinkingMsg.remove();
@@ -1616,21 +1692,26 @@ function sendMessage() {
                     // 清理多余空行：连续2个以上换行压缩为1个，去掉首尾空白
                     answer = answer.replace(/\n{3,}/g, '\n\n').trim();
 
-                    // 超时兜底：不把原始错误串当回答显示
-                    if (answer.indexOf(QD_CONTAINER_ERR) >= 0 || answer.length === 0) {
-                        thinking = '';
-                        answer = '⚠️ 容器未能就绪（已等待 90 秒）。\n\n'
-                            + '常见原因：拔掉数据线后系统清理了后台，容器正在重建。\n\n'
+                    // 兜底：不把内部错误串当回答显示
+                    if (answer === QD_AI_LOAD_TIMEOUT) {
+                        const raw = (window.qdLastNativeRaw || '').substring(0, 120);
+                        const stRaw = (window.qdLastStatus || '').substring(0, 160);
+                        answer = '⚠️ 本地模型还在加载（已等 60 秒）。\n\n'
+                            + '诊断：status=' + (stRaw || '无') + ' | callAI=' + (raw || '未调用') + '\n\n'
                             + '建议：\n'
-                            + '1) 稍等 10~20 秒后重试；\n'
-                            + '2) 若反复出现，到「设置 → 电池 → 后台耗电管理」允许「起点OS mini」后台运行；\n'
-                            + '3) 确认手机已解锁且 App 在前台。';
+                            + '1) 等 5~10 秒直接再发一次；\n'
+                            + '2) 点右上角头像 →「关于」，看 API 状态是否为“模型就绪”；\n'
+                            + '3) 仍不行就重启一次 App。';
+                        thinking = '';
+                    } else if (answer.indexOf(QD_CONTAINER_ERR) >= 0 || answer.length === 0) {
+                        answer = '⚠️ 这次没有取到回答，请再发一次。';
+                        thinking = '';
                     }
 
-                    const aiMsg = appendMessage({ role: 'ai', content: '', thinking: thinking || (answer.indexOf(QD_CONTAINER_ERR) >= 0 ? '' : result) });
-                    aiMsg.dataset.thinking = thinking || (answer.indexOf(QD_CONTAINER_ERR) >= 0 ? '' : result);
+                    const aiMsg = appendMessage({ role: 'ai', content: '', thinking: thinking });
+                    aiMsg.dataset.thinking = thinking;
                     typewriterEffect(aiMsg, answer, 15);
-                    currentChat.messages.push({ role: 'ai', content: answer, thinking: thinking || result });
+                    currentChat.messages.push({ role: 'ai', content: answer, thinking: thinking });
                 }
             } catch (e) {
                 thinkingMsg.querySelector('.message-content').textContent = '[INTENT 异常] ' + e.message;

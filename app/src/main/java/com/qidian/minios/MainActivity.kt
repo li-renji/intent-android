@@ -31,8 +31,23 @@ class MainActivity : Activity() {
         private const val ROOTFS_ASSET = "rootfs.tar"
         private const val SHM_NAME = "shm/shm.dat"
 
-        @Volatile
-        private var containerStarted = false
+        // ===== 进程级状态 =====
+        // 这些必须放在 companion：横竖屏切换 / 主题变化都会让 Activity 销毁重建，
+        // 如果挂在实例上，重建出来的新实例字段全是 null（containerStarted 挡住了
+        // 重新初始化），WebView 的 JS 接口就会读到 ai:false、http:false，
+        // 而 HTTP 服务还挂在旧实例上继续正常工作——出现"API 好的、App 却说模型加载中"的诡异分裂。
+        @Volatile var aiService: AiService? = null
+            private set
+        @Volatile var containerReady = false
+            private set
+        @Volatile var localHttp: LocalHttpServer? = null
+            private set
+        @Volatile var rootfsDir: File? = null
+            private set
+        @Volatile var shmFile: File? = null
+            private set
+        @Volatile private var containerStarted = false
+        @Volatile private var bootLock = Any()
 
         // 投屏授权全局变量
         @Volatile
@@ -43,26 +58,17 @@ class MainActivity : Activity() {
 
     lateinit var webView: WebView
 
-    @Volatile
-    private var aiService: AiService? = null
-
-    @Volatile
-    private var containerReady = false
-
-    @Volatile
-    private var microsrvReady = false
-
-    @Volatile
-    private var rootfsDir: File? = null
-    @Volatile
-    private var shmFile: File? = null
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
         // 先拉起前台服务：让进程在容器启动前就进入 foreground，
         // 否则熄屏/切后台时会被 cached app freezer 冻结，proot 起不来。
         KeepAliveService.start(this)
+
+        // 立刻启动局域网 HTTP API。
+        // 它跑在 App 进程自己的线程里，syscall 直通内核、不经过 proot，
+        // 也不依赖 WebView 轮询，所以容器卡死/没起来时它照样能用。
+        startHttpApi()
 
         // 系统背景纯黑
         window.decorView.setBackgroundColor(android.graphics.Color.BLACK)
@@ -184,6 +190,35 @@ class MainActivity : Activity() {
         File(uiDir, "backups").mkdirs()
     }
 
+    /**
+     * 启动局域网 HTTP API（9999 / 8822）。
+     *
+     * 与旧方案的区别：不再往 proot 容器里塞 microsrv.qds。
+     * proot 用 ptrace 拦截每个 syscall，且自身是 App 的子进程——App 被冻结或
+     * proot 事件循环卡住时，容器内的 microsrv 会变成"端口 LISTEN 但永不响应"。
+     * 现在 ServerSocket 直接在 App 进程里跑，/chat 直接调 MNN，链路最短。
+     */
+    private fun startHttpApi() {
+        if (localHttp?.isListening() == true) return
+        Thread {
+            try {
+                val srv = LocalHttpServer(
+                    httpPort = 9999,
+                    statusPort = 8822,
+                    aiProvider = { aiService }
+                )
+                val ok = srv.start()
+                localHttp = srv
+                Log.i(TAG, "HTTP API 启动结果: ok=$ok port=${srv.boundHttpPort}")
+            } catch (t: Throwable) {
+                Log.e(TAG, "HTTP API 启动异常", t)
+            }
+        }.apply {
+            name = "http-api-boot"
+            start()
+        }
+    }
+
     /** 后台启动容器 + AI 服务 */
     private fun startContainerInBackground() {
         Thread {
@@ -289,8 +324,10 @@ class MainActivity : Activity() {
         val nativeDir = applicationInfo.nativeLibraryDir
         val shmDir = shmFile.parentFile!!
 
+        // 容器只负责验证 rootfs / 模块可执行，不再在里面起 HTTP 服务。
+        // HTTP 由 App 内的 LocalHttpServer 提供（见 startHttpApi），
+        // 避免 proot 卡死时端口 LISTEN 却不响应，也避免两套服务抢 9999。
         val guestCommand =
-            "nohup /系统/微服务.qd/microsrv.qds >/tmp/microsrv.log 2>&1 & sleep 1; " +
             "echo '=== 奇点OS 容器启动完成 ===' > /container_result.txt; " +
             "echo '系统模块:' >> /container_result.txt; " +
             "ls /系统 >> /container_result.txt 2>&1; " +
@@ -419,10 +456,21 @@ class MainActivity : Activity() {
 
         @JavascriptInterface
         fun getStatus(): String {
-            val aiReady = activity.aiService != null
-            val container = activity.containerReady
-            val microsrv = activity.microsrvReady
-            return "{\"container\":$container,\"ai\":$aiReady,\"microsrv\":$microsrv}"
+            val aiReady = MainActivity.aiService != null
+            val container = MainActivity.containerReady
+            val http = MainActivity.localHttp?.isListening() == true
+            return "{\"container\":$container,\"ai\":$aiReady,\"microsrv\":$http,\"http\":$http}"
+        }
+
+        /** 给界面展示"怎么调用 API"用：返回监听状态与局域网地址。 */
+        @JavascriptInterface
+        fun getHttpInfo(): String {
+            val s = MainActivity.localHttp
+            val listening = s?.isListening() == true
+            val port = s?.boundHttpPort ?: -1
+            val lan = if (listening) s!!.lanAddress() else ""
+            val ai = MainActivity.aiService != null
+            return "{\"listening\":$listening,\"port\":$port,\"lan\":\"$lan\",\"ai\":$ai}"
         }
 
         @JavascriptInterface
@@ -509,7 +557,7 @@ class MainActivity : Activity() {
         @JavascriptInterface
         fun callAI(prompt: String): String {
             return try {
-                val svc = activity.aiService
+                val svc = MainActivity.aiService
                 if (svc != null) {
                     Log.i(TAG, "AI 推理调用，prompt 长度=${prompt.length}")
                     val result = svc.inferSync(prompt)
@@ -647,8 +695,8 @@ class MainActivity : Activity() {
         fun getSystemInfo(): String {
             return try {
                 val sb = StringBuilder()
-                sb.appendLine("容器状态: ${if (activity.rootfsDir?.exists() == true) "运行中" else "未启动"}")
-                sb.appendLine("AI 引擎: ${if (activity.aiService != null) "MNN (Qwen2.5-1.5B)" else "未就绪"}")
+                sb.appendLine("容器状态: ${if (MainActivity.rootfsDir?.exists() == true) "运行中" else "未启动"}")
+                sb.appendLine("AI 引擎: ${if (MainActivity.aiService != null) "MNN (Qwen2.5-1.5B)" else "未就绪"}")
                 sb.appendLine("模型路径: ${activity.filesDir}/models/qwen2.5-1.5b-mnn")
                 sb.toString()
             } catch (e: Exception) {
