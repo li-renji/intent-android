@@ -1,0 +1,87 @@
+diff --git a/app/src/main/assets/ui/app.js b/app/src/main/assets/ui/app.js
+index b03aad0..66d5fd1 100644
+--- a/app/src/main/assets/ui/app.js
++++ b/app/src/main/assets/ui/app.js
+@@ -2146,3 +2146,82 @@ async function intentAgentLoop(userText, onThinking, onToolCall, onAnswer) {
+     return { answer: fullResponse, thinking: '', fullResponse };
+ }
+ 
++// ========== 局域网HTTP API服务 ==========
++// 安全启动，出错不影响主功能
++try {
++    // 测试JS是否在运行
++    if (window.Qidian && Qidian.execContainer) {
++        Qidian.execContainer('echo "js loaded" > /tmp/js_test.txt');
++    }
++
++    var apiBusy = false;
++    var httpStarted = false;
++
++    // 轮询等待Qidian就绪，然后启动HTTP服务和桥接
++    var waitTimer = setInterval(function() {
++        if (httpStarted) {
++            clearInterval(waitTimer);
++            return;
++        }
++        if (!window.Qidian || !Qidian.execContainer || !Qidian.callAI) return;
++        httpStarted = true;
++        clearInterval(waitTimer);
++
++        try {
++            // HTTP 服务已并入 /系统/微服务.qd/microsrv.qds（v2: 9999 HTTP + 8822 状态）
++            // 这里只保留 AI 桥接：microsrv 写 /tmp/api_request，我们读完调 AI 再写回 /tmp/api_response。
++            Qidian.execContainer('echo "bridge-only mode (HTTP served by microsrv.qds)" > /tmp/http_debug.log');
++
++            // 清掉上一代 shell 服务，避免和 microsrv 抢 9999 端口
++            Qidian.execContainer('pkill -f http_server.sh 2>/dev/null; pkill -f "toybox nc -l" 2>/dev/null');
++
++            // 启动AI请求桥接轮询
++            Qidian.execContainer('echo "bridge started" > /tmp/bridge_debug.log');
++            setInterval(function() {
++                if (apiBusy) return;
++                if (!window.Qidian || !Qidian.execContainer || !Qidian.callAI) return;
++                try {
++                    var exists = Qidian.execContainer('test -f /tmp/api_request && echo yes || echo no').trim();
++                    if (exists !== 'yes') return;
++                    apiBusy = true;
++
++                    var prompt = Qidian.execContainer('cat /tmp/api_request').trim();
++                    Qidian.execContainer('rm -f /tmp/api_request');
++
++                    Qidian.execContainer('echo "got prompt: ' + prompt.substring(0, 50).replace(/"/g, '') + '" >> /tmp/bridge_debug.log');
++
++                    if (!prompt) {
++                        Qidian.execContainer('echo \'{"error":"empty"}\' > /tmp/api_response');
++                        apiBusy = false;
++                        return;
++                    }
++
++                    var resp = Qidian.callAI(prompt);
++                    Qidian.execContainer('echo "got resp, len=' + resp.length + '" >> /tmp/bridge_debug.log');
++
++                    // 用base64编码写入，避免引号问题
++                    var result = '{"response":"' + resp.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n') + '"}';
++                    var b64 = btoa(unescape(encodeURIComponent(result)));
++                    Qidian.execContainer('echo "' + b64 + '" | base64 -d > /tmp/api_response');
++                    Qidian.execContainer('echo "resp written" >> /tmp/bridge_debug.log');
++                } catch (e) {
++                    Qidian.execContainer('echo "error: ' + e.message.replace(/"/g, '').substring(0, 100) + '" >> /tmp/bridge_debug.log');
++                    try {
++                        Qidian.execContainer('echo \'{"error":"bridge error"}\' > /tmp/api_response');
++                    } catch (e2) {}
++                }
++                apiBusy = false;
++            }, 1000);
++
++            console.log('[AI Bridge] ready — HTTP 由 microsrv.qds 提供 (9999)');
++        } catch (e) {
++            try {
++                Qidian.execContainer('echo "error: ' + e.message.replace(/"/g, '') + '" >> /tmp/http_debug.log');
++            } catch (e2) {}
++            console.warn('[HTTP API] Start failed:', e);
++        }
++    }, 1000);
++
++} catch (e) {
++    console.warn('[HTTP API] Init failed:', e);
++}

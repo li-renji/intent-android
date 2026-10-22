@@ -1,0 +1,3 @@
+[http-api] starting on port 9999
+[http-api] server started, pid=16269
+nc: Unknown option 'e' (see "nc --help")
