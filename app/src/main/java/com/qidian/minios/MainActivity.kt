@@ -205,7 +205,8 @@ class MainActivity : Activity() {
                 val srv = LocalHttpServer(
                     httpPort = 9999,
                     statusPort = 8822,
-                    aiProvider = { aiService }
+                    aiProvider = { aiService },
+                    keyDir = filesDir
                 )
                 val ok = srv.start()
                 localHttp = srv
@@ -462,17 +463,18 @@ class MainActivity : Activity() {
             return "{\"container\":$container,\"ai\":$aiReady,\"microsrv\":$http,\"http\":$http}"
         }
 
-        /** 给界面展示"怎么调用 API"用：返回监听状态与局域网地址。 */
+        /** 给界面展示"怎么调用 API"用：返回监听状态、局域网地址与 API key。 */
         @JavascriptInterface
         fun getHttpInfo(): String {
             val s = MainActivity.localHttp
             val listening = s?.isListening() == true
             val port = s?.boundHttpPort ?: -1
             val lan = if (listening) s!!.lanAddress() else ""
+            val key = if (listening) s!!.apiKey() else ""
             val ai = MainActivity.aiService != null
             val uptime = s?.uptimeSec() ?: 0L
             val chats = s?.chatCount() ?: 0L
-            return "{\"listening\":$listening,\"port\":$port,\"lan\":\"$lan\",\"ai\":$ai,\"uptime\":$uptime,\"chats\":$chats}"
+            return "{\"listening\":$listening,\"port\":$port,\"lan\":\"$lan\",\"ai\":$ai,\"uptime\":$uptime,\"chats\":$chats,\"apiKey\":\"$key\"}"
         }
 
         @JavascriptInterface

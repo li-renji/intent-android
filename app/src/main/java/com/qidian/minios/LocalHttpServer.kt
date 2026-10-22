@@ -37,7 +37,9 @@ class LocalHttpServer(
     private val httpPort: Int = 9999,
     private val statusPort: Int = 8822,
     private val aiProvider: () -> AiService?,
-    private val modelName: String = "qwen2.5-1.5b-mnn"
+    private val modelName: String = "qwen2.5-1.5b-mnn",
+    /** App filesDir：API key 持久化目录（首次启动自动生成，之后固定不变）。 */
+    private val keyDir: File? = null
 ) {
     companion object {
         private const val TAG = "LocalHttp"
@@ -48,6 +50,9 @@ class LocalHttpServer(
 
     /** MNN 引擎不是线程安全的，所有推理串行化。 */
     private val inferLock = Any()
+
+    /** 进程内缓存的 API key。 */
+    @Volatile private var cachedKey: String? = null
 
     private val startedAt = System.currentTimeMillis()
     private val chatCount = AtomicLong(0)
@@ -116,6 +121,48 @@ class LocalHttpServer(
 
     /** 已服务对话次数 */
     fun chatCount(): Long = chatCount.get()
+
+    // ---------------------------------------------------------------- API key
+
+    /**
+     * 获取 API key：首次调用自动生成（qd- + 24位十六进制），写入 keyDir/api_key.txt，
+     * 之后一直用这一个。Agent 侧配置一次即可，重启/重装（保留数据）都不变。
+     */
+    fun apiKey(): String {
+        cachedKey?.let { return it }
+        synchronized(this) {
+            cachedKey?.let { return it }
+            val generated = "qd-" + java.util.UUID.randomUUID().toString().replace("-", "").take(24)
+            val key = try {
+                val dir = keyDir
+                if (dir != null) {
+                    val f = File(dir, "api_key.txt")
+                    if (f.isFile) {
+                        val saved = f.readText().trim()
+                        if (saved.length >= 16) saved else {
+                            f.writeText(generated); generated
+                        }
+                    } else {
+                        f.writeText(generated); generated
+                    }
+                } else generated
+            } catch (_: Throwable) {
+                generated
+            }
+            cachedKey = key
+            return key
+        }
+    }
+
+    /** 校验请求头中的 key：支持 Authorization: Bearer <key> 与 X-API-Key: <key>。 */
+    private fun checkAuth(headers: Map<String, String>): Boolean {
+        val expected = apiKey()
+        val auth = headers["authorization"] ?: ""
+        if (auth.length > 7 && auth.startsWith("Bearer ", ignoreCase = true) &&
+            auth.substring(7).trim() == expected) return true
+        val xKey = headers["x-api-key"]?.trim() ?: ""
+        return xKey == expected
+    }
 
     /** 结束时间戳（毫秒），用于 /health 的 uptime。 */
     private fun uptimeSecInternal(): Long = (System.currentTimeMillis() - startedAt) / 1000
@@ -236,9 +283,28 @@ class LocalHttpServer(
 
         val body = readBody(input, headers)
 
+        // ---- 鉴权：需要 key 的端点（/health、/、8822 保持开放，方便看状态）----
+        val protected = path == "/chat" || path == "/api/chat" ||
+            path == "/v1/chat/completions" || path == "/v1/models"
+        if (protected && !checkAuth(headers)) {
+            writeJson(
+                out, 401,
+                """{"ok":false,"error":"invalid_api_key","hint":"请求头需带 Authorization: Bearer <key> 或 X-API-Key: <key>。key 在 App「关于」页查看。"}"""
+            )
+            return
+        }
+
         when {
             path == "/health" && (method == "GET" || method == "HEAD") -> writeJson(out, 200, healthJson())
             path == "/" && method == "GET" -> writeHtml(out, 200, indexHtml())
+            path == "/v1/models" && method == "GET" -> writeJson(out, 200, modelsJson())
+            path == "/v1/chat/completions" -> {
+                if (method != "POST") {
+                    writeJson(out, 405, """{"error":{"message":"use POST","type":"invalid_request_error"}}""")
+                } else {
+                    handleOpenAiChat(out, body)
+                }
+            }
             path == "/chat" || path == "/api/chat" -> {
                 if (method != "POST") {
                     writeJson(
@@ -252,7 +318,7 @@ class LocalHttpServer(
             path == "/status" -> writeJson(out, 200, healthJson())
             else -> writeJson(
                 out, 404,
-                """{"ok":false,"error":"not_found","hint":"可用端点：GET /health，GET /，POST /chat"}"""
+                """{"ok":false,"error":"not_found","hint":"可用端点：GET /health，GET /，POST /chat，POST /v1/chat/completions（OpenAI 兼容）"}"""
             )
         }
     }
@@ -313,6 +379,107 @@ class LocalHttpServer(
         )
     }
 
+    // ---------------------------------------------------------------- OpenAI 兼容
+
+    /** GET /v1/models：列出本机模型，让 Agent 端能拉模型列表。 */
+    private fun modelsJson(): String {
+        val created = startedAt / 1000
+        return """{"object":"list","data":[{"id":"$modelName","object":"model","created":$created,"owned_by":"qidian-minios"}]}"""
+    }
+
+    /**
+     * POST /v1/chat/completions：OpenAI 兼容对话接口。
+     * 支持 stream:true（SSE，一次性整段输出）与 stream:false。
+     * 多轮 messages 拼接为带角色标记的单 prompt（本地小模型无多轮模板）。
+     */
+    private fun handleOpenAiChat(out: OutputStream, body: String) {
+        val t0 = System.currentTimeMillis()
+
+        var stream = false
+        val messages = ArrayList<Pair<String, String>>()
+        try {
+            val jo = JSONObject(body.trim())
+            stream = jo.optBoolean("stream", false)
+            val arr = jo.optJSONArray("messages")
+            if (arr != null) {
+                for (i in 0 until arr.length()) {
+                    val m = arr.optJSONObject(i) ?: continue
+                    messages.add(Pair(m.optString("role", "user"), m.optString("content", "")))
+                }
+            }
+        } catch (t: Throwable) {
+            writeJson(out, 400, """{"error":{"message":"body must be JSON with messages array","type":"invalid_request_error"}}""")
+            return
+        }
+        if (messages.isEmpty()) {
+            writeJson(out, 400, """{"error":{"message":"messages is required","type":"invalid_request_error"}}""")
+            return
+        }
+
+        val promptSb = StringBuilder()
+        for ((role, content) in messages) {
+            when (role) {
+                "system" -> promptSb.append("[系统] ").append(content).append('\n')
+                "assistant" -> promptSb.append("[助手] ").append(content).append('\n')
+                else -> promptSb.append(content).append('\n')
+            }
+        }
+        val prompt = promptSb.toString().trim()
+        if (prompt.isBlank()) {
+            writeJson(out, 400, """{"error":{"message":"messages content is empty","type":"invalid_request_error"}}""")
+            return
+        }
+
+        val ai = aiProvider()
+        if (ai == null) {
+            writeJson(out, 503, """{"error":{"message":"model is loading, retry in a few seconds","type":"server_error","code":"model_loading"}}""")
+            return
+        }
+
+        val reply: String = try {
+            synchronized(inferLock) { ai.inferSync(prompt) ?: "" }
+        } catch (t: Throwable) {
+            errorCount.incrementAndGet()
+            writeJson(out, 500, """{"error":{"message":"${escape(t.message ?: "infer_failed")}","type":"server_error"}}""")
+            return
+        }
+
+        chatCount.incrementAndGet()
+        val ms = System.currentTimeMillis() - t0
+        Log.i(TAG, "openai chat 完成 ${ms}ms, prompt=${prompt.take(MAX_BODY_LOG)}")
+
+        val id = "chatcmpl-" + java.util.UUID.randomUUID().toString().replace("-", "").take(20)
+        val created = System.currentTimeMillis() / 1000
+
+        if (!stream) {
+            writeJson(
+                out, 200,
+                """{"id":"$id","object":"chat.completion","created":$created,"model":"$modelName","choices":[{"index":0,"message":{"role":"assistant","content":${JSONObject.quote(reply)}},"finish_reason":"stop"}],"usage":{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0}}"""
+            )
+            return
+        }
+
+        // SSE 流式：role 块 → 内容块 → 结束块 → [DONE]
+        val sb = StringBuilder()
+        sb.append("HTTP/1.1 200 OK\r\n")
+        sb.append("Content-Type: text/event-stream; charset=utf-8\r\n")
+        sb.append("Cache-Control: no-cache\r\n")
+        sb.append("Connection: close\r\n")
+        sb.append("Access-Control-Allow-Origin: *\r\n\r\n")
+
+        fun chunk(delta: String, finish: String?) {
+            val finishJson = if (finish == null) "null" else "\"$finish\""
+            sb.append("data: {\"id\":\"$id\",\"object\":\"chat.completion.chunk\",\"created\":$created,\"model\":\"$modelName\",\"choices\":[{\"index\":0,\"delta\":$delta,\"finish_reason\":$finishJson}]}\n\n")
+        }
+        chunk("""{"role":"assistant","content":""}""", null)
+        chunk("""{"content":${JSONObject.quote(reply)}}""", null)
+        chunk("{}", "stop")
+        sb.append("data: [DONE]\n\n")
+
+        out.write(sb.toString().toByteArray(Charsets.UTF_8))
+        out.flush()
+    }
+
     // ---------------------------------------------------------------- HTTP 解析
 
     /** 读到 \r\n\r\n 为止，返回头部文本（不含结尾空行）。 */
@@ -366,7 +533,7 @@ class LocalHttpServer(
             append("Content-Length: ${body.size}\r\n")
             append("Connection: close\r\n")
             append("Access-Control-Allow-Origin: *\r\n")
-            append("Access-Control-Allow-Headers: Content-Type\r\n")
+            append("Access-Control-Allow-Headers: Content-Type, Authorization, X-API-Key\r\n")
             append("Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n")
             append("\r\n")
         }
@@ -388,7 +555,7 @@ class LocalHttpServer(
             append("Content-Length: ${bytes.size}\r\n")
             append("Connection: close\r\n")
             append("Access-Control-Allow-Origin: *\r\n")
-            append("Access-Control-Allow-Headers: Content-Type\r\n")
+            append("Access-Control-Allow-Headers: Content-Type, Authorization, X-API-Key\r\n")
             append("Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n")
             append("\r\n")
         }
@@ -455,17 +622,21 @@ a{color:#7ab7ff}
 <h1>起点OS mini · 本地 AI API</h1>
 <div class="pill">运行中 · 模型 $modelName</div>
 <h2>端点</h2>
-<pre>GET  /health         服务与模型状态
-GET  /               本页
-POST /chat           对话（body: {"prompt":"你好"})
-GET  /status         同 /health
-8822                 一行文本状态</pre>
+<pre>GET  /health                  服务与模型状态（无需 key）
+GET  /v1/models               模型列表（OpenAI 兼容，需 key）
+POST /v1/chat/completions     对话（OpenAI 兼容，需 key，支持 stream）
+POST /chat                    对话（简单格式，需 key）
+8822                          一行文本状态</pre>
+<h2>给 Agent / 客户端配置</h2>
+<pre>Base URL: http://${localIp()}:$boundHttpPort/v1
+API Key:  在 App「关于」页查看（首次启动自动生成）</pre>
 <h2>调用示例</h2>
 <pre>curl http://${localIp()}:$boundHttpPort/health
 
-curl -X POST http://${localIp()}:$boundHttpPort/chat \
-  -H 'Content-Type: application/json' \
-  -d '{"prompt":"你好，介绍一下你自己"}'</pre>
+curl -X POST http://${localIp()}:$boundHttpPort/v1/chat/completions \\
+  -H 'Authorization: Bearer &lt;你的key&gt;' \\
+  -H 'Content-Type: application/json' \\
+  -d '{"model":"$modelName","messages":[{"role":"user","content":"你好"}]}'</pre>
 <p style="color:#8b9096;font-size:12.5px">App 退到后台不影响服务；进程被杀后重新打开 App 即自动恢复。</p>
 </body></html>
 """.trimIndent()

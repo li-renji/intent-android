@@ -123,18 +123,18 @@ function setupHeaderButtons() {
                         if (window.Qidian && Qidian.getHttpInfo) {
                             const info = JSON.parse(Qidian.getHttpInfo());
                             if (info.listening) {
-                                apiInfo = '\n\n── 局域网 AI API ──\n'
-                                    + '地址: http://' + info.lan + '\n'
-                                    + '状态: ' + (info.ai ? '模型就绪' : '模型加载中') + '\n'
-                                    + 'POST /chat  {"prompt":"你好"}\n'
-                                    + 'GET  /health\n\n'
-                                    + '在电脑浏览器打开上面的地址可看完整用法。';
+                                apiInfo = '\n\n── 给 Agent 配置（OpenAI 兼容）──\n'
+                                    + 'Base URL: http://' + info.lan + '/v1\n'
+                                    + 'API Key: ' + (info.apiKey || '（生成中，稍后再看）') + '\n'
+                                    + '模型名: qwen2.5-1.5b-mnn\n\n'
+                                    + '在支持自定义 OpenAI 接口的 Agent / 客户端里填上面的 Base URL 和 Key 即可。\n'
+                                    + '电脑浏览器打开 http://' + info.lan + ' 可看完整用法。';
                             } else {
                                 apiInfo = '\n\n── 局域网 AI API ──\n未启动（9999 端口被占用或启动失败）';
                             }
                         }
                     } catch (e) { }
-                    alert('起点OS mini v1.0\n\n基于 proot 非 root 容器\n模块化系统 (.qd/.qds/.qdai)\n本地 AI: Qwen2.5-1.5B (MNN)' + apiInfo);
+                    alert('起点OS mini v1.0\n\n本地 AI: Qwen2.5-1.5B (MNN)\n模块化系统 (.qd/.qds/.qdai)' + apiInfo);
                 }
             });
         });
