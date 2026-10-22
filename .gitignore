@@ -54,3 +54,10 @@ llama.cpp.tar.gz
 *.qcow2
 *.pyc
 __pycache__/
+.toolchain/
+.backup/
+app/build/
+.gradle/
+local.properties
+*.apk
+!tools/http_api/microsrv.qds

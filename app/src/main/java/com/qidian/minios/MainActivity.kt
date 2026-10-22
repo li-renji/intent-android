@@ -60,6 +60,10 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        // 先拉起前台服务：让进程在容器启动前就进入 foreground，
+        // 否则熄屏/切后台时会被 cached app freezer 冻结，proot 起不来。
+        KeepAliveService.start(this)
+
         // 系统背景纯黑
         window.decorView.setBackgroundColor(android.graphics.Color.BLACK)
 
