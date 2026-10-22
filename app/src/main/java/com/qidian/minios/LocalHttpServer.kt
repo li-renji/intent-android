@@ -111,8 +111,14 @@ class LocalHttpServer(
     /** 局域网可访问地址，如 192.168.3.4:9999 */
     fun lanAddress(): String = "${localIp()}:$boundHttpPort"
 
+    /** 服务运行秒数（供 JS 桥读取，WebView 里 fetch 本机 /health 不一定可行） */
+    fun uptimeSec(): Long = uptimeSecInternal()
+
+    /** 已服务对话次数 */
+    fun chatCount(): Long = chatCount.get()
+
     /** 结束时间戳（毫秒），用于 /health 的 uptime。 */
-    private fun uptimeSec(): Long = (System.currentTimeMillis() - startedAt) / 1000
+    private fun uptimeSecInternal(): Long = (System.currentTimeMillis() - startedAt) / 1000
 
     // ---------------------------------------------------------------- socket
 

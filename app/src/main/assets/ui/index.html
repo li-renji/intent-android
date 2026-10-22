@@ -69,6 +69,10 @@
             </div>
         </div>
     </div>
+    <!-- 全局实时状态灯：绿=AI 就绪，黄=加载中，红=异常。点按显示详情。
+         数据由 app.js 的 QdStatus 每 2 秒刷新，不随页面切换重建。 -->
+    <div id="qd-status-dot" title="系统状态"
+         style="position:fixed;top:12px;right:16px;width:9px;height:9px;border-radius:50%;background:#888;z-index:9999;cursor:pointer;box-shadow:0 0 5px rgba(0,0,0,.35);"></div>
     <script src="app.js"></script>
 </body>
 </html>

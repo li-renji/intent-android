@@ -286,7 +286,9 @@ function renderContactList(container) {
     const aiItem = createListItem({
         avatar: '🤖',
         name: '奇点AI',
-        preview: '本地 AI 助手 · 在线',
+        // 动态状态：跟随 MNN 引擎真实加载情况（QdStatus 每 2 秒刷新）
+        preview: '本地 AI 助手 · ' + (QdStatus.snap.ai ? '在线'
+            : (QdStatus.snap.modelExists === false ? '模型未下载' : '模型加载中')),
         onClick: () => openContactDetail({ name: '奇点AI', type: 'ai', avatar: '🤖', desc: '基于 Qwen2.5-1.5B 的本地 AI 助手，支持对话、系统管理、界面定制。' })
     });
     container.appendChild(aiItem);
@@ -633,14 +635,44 @@ function renderKnowledgeContent() {
 }
 
 function renderAppList(container) {
-    // VS Code（默认集成）
+    // 应用状态全部从 QdStatus 实时读取，不写死。
+    const aiState = QdStatus.snap.ai
+        ? { text: '运行中', kind: 'ok' }
+        : (QdStatus.snap.modelExists === false
+            ? { text: '模型未下载', kind: 'warn' }
+            : { text: '模型加载中', kind: 'warn' });
+    const containerState = QdStatus.snap.container
+        ? { text: '就绪', kind: 'ok' }
+        : { text: '初始化中', kind: 'warn' };
+    const httpState = QdStatus.snap.http
+        ? { text: '监听中 · ' + (QdStatus.snap.lan || ('端口 ' + QdStatus.snap.port)), kind: 'ok' }
+        : { text: '未监听', kind: 'warn' };
+
+    // VS Code（默认集成，纯内置功能卡片，无独立运行状态）
     const vscodeItem = createListItem({
         avatar: '📝',
         name: 'VS Code',
         preview: '代码编辑器（Web版）',
-        onClick: () => openAppDetail({ name: 'VS Code', icon: '📝', desc: '基于 Web 的代码编辑器，支持 HTML/CSS/JS/代码编辑。可直接编辑奇点OS界面文件。', status: '就绪', action: 'open_vscode' })
+        onClick: () => openAppDetail({
+            name: 'VS Code', icon: '📝',
+            desc: '基于 Web 的代码编辑器，支持 HTML/CSS/JS/代码编辑。可直接编辑奇点OS界面文件。',
+            status: '内置功能', statusKind: 'builtin', action: 'open_vscode'
+        })
     });
     container.appendChild(vscodeItem);
+
+    // 局域网 API（App 原生 HTTP 服务）
+    const apiItem = createListItem({
+        avatar: '🌐',
+        name: '局域网 API',
+        preview: httpState.text,
+        onClick: () => openAppDetail({
+            name: '局域网 API', icon: '🌐',
+            desc: 'App 内置 HTTP 服务，电脑可通过 WiFi 调用本地 AI。POST /chat 对话，GET /health 查状态。地址见状态文字。',
+            status: httpState.text, statusKind: httpState.kind
+        })
+    });
+    container.appendChild(apiItem);
 
     // 安装 Windows 应用
     const installItem = createListItem({
@@ -656,16 +688,24 @@ function renderAppList(container) {
         avatar: '💻',
         name: '容器终端',
         preview: '奇点OS proot 容器环境',
-        onClick: () => openAppDetail({ name: '容器终端', icon: '💻', desc: '基于 proot 的奇点OS容器环境，无需 root 权限即可运行 Linux 程序和奇点OS全部模块。支持 .qd/.qds/.qdai 模块化系统。', status: '运行中' })
+        onClick: () => openAppDetail({
+            name: '容器终端', icon: '💻',
+            desc: '基于 proot 的奇点OS容器环境，无需 root 权限即可运行 Linux 程序和奇点OS全部模块。支持 .qd/.qds/.qdai 模块化系统。按需启动，执行完即退出。',
+            status: containerState.text, statusKind: containerState.kind
+        })
     });
     container.appendChild(terminalItem);
 
-    // AI 引擎
+    // AI 引擎（状态实时：模型没加载完会如实显示"模型加载中"）
     const aiItem = createListItem({
         avatar: '🧠',
         name: 'AI 引擎',
-        preview: 'MNN · Qwen2.5-1.5B',
-        onClick: () => openAppDetail({ name: 'AI 引擎', icon: '🧠', desc: '基于 MNN 推理引擎的本地大语言模型，4线程约25.9 tok/s。支持对话、系统管理、界面定制。', status: '就绪' })
+        preview: 'MNN · Qwen2.5-1.5B · ' + aiState.text,
+        onClick: () => openAppDetail({
+            name: 'AI 引擎', icon: '🧠',
+            desc: '基于 MNN 推理引擎的本地大语言模型（Qwen2.5-1.5B，MNN 4-bit）。支持对话、系统管理、界面定制。首次加载约 2~3 秒。',
+            status: aiState.text, statusKind: aiState.kind
+        })
     });
     container.appendChild(aiItem);
 
@@ -778,7 +818,9 @@ function openContactDetail(contact) {
             <div class="detail-avatar">${contact.avatar || '👤'}</div>
             <h3 style="margin-bottom:6px;font-size:var(--fs-lg);">${contact.name}</h3>
             <p style="color:var(--text-secondary);font-size:var(--fs-sm);margin-bottom:8px;">
-                ${contact.type === 'ai' ? '本地 AI 助手' : '好友'}
+                ${contact.type === 'ai'
+                    ? '本地 AI 助手 · ' + (QdStatus.snap.ai ? '引擎运行中' : '引擎未就绪')
+                    : '好友'}
             </p>
             <p style="color:var(--text-secondary);font-size:var(--fs-sm);text-align:center;max-width:300px;line-height:1.6;">
                 ${contact.desc || ''}
@@ -806,11 +848,15 @@ function openAppDetail(app) {
     header.innerHTML = `<span>${app.icon} ${app.name}</span>`;
     footer.style.display = 'none';
 
+    // 状态颜色按真实状态显示：ok=绿、warn=黄、error=红、builtin=中性灰
+    const kindColor = { ok: 'var(--success)', warn: 'var(--warning)', error: 'var(--error)', builtin: 'var(--text-secondary)' };
+    const statusColor = kindColor[app.statusKind] || 'var(--success)';
+
     body.innerHTML = `
         <div style="display:flex;flex-direction:column;align-items:center;padding:30px 20px;">
             <div class="detail-avatar">${app.icon}</div>
             <h3 style="margin-bottom:6px;font-size:var(--fs-lg);">${app.name}</h3>
-            <p style="color:var(--success);font-size:var(--fs-sm);margin-bottom:12px;">● ${app.status || '就绪'}</p>
+            <p style="color:${statusColor};font-size:var(--fs-sm);margin-bottom:12px;">● ${app.status || '未就绪'}</p>
             <p style="color:var(--text-secondary);font-size:var(--fs-sm);text-align:center;max-width:320px;line-height:1.6;">
                 ${app.desc || ''}
             </p>
@@ -968,77 +1014,150 @@ function openSettingDetail(setting) {
     }
 
     if (setting.name === '系统状态') {
-        let status = { container: false, ai: false, microsrv: false };
-        if (window.Qidian && Qidian.getStatus) {
-            try { status = JSON.parse(Qidian.getStatus()); } catch (e) {}
-        }
-
-        // 检测模型文件
-        let modelInfo = { exists: false, sizeMB: 0 };
-        if (window.Qidian && Qidian.checkModelExists) {
-            try { modelInfo = JSON.parse(Qidian.checkModelExists()); } catch (e) {}
-        }
-
-        const modelStatus = modelInfo.exists ? '已下载' : '未下载';
-        const modelColor = modelInfo.exists ? 'var(--success)' : 'var(--error)';
-
+        // ===== 实时监控页 =====
+        // 数据来自 QdStatus（每 2 秒刷新），这里只负责把快照画出来。
+        // 回调发现 DOM 已被移除（离开页面）时自动退订，避免重复渲染。
         body.innerHTML = `
-            <div style="padding:16px;">
+            <div style="padding:16px;" id="qd-monitor-root">
+                <p style="color:var(--text-secondary);font-size:var(--fs-sm);margin-bottom:10px;">⏱ 以下状态每 2 秒自动刷新，为实时真实数据</p>
                 <div class="settings-grid">
                     <div class="setting-card">
-                        <div class="label">容器状态</div>
-                        <div class="value" style="color:${status.container ? 'var(--success)' : 'var(--warning)'};">${status.container ? '运行中' : '启动中'}</div>
-                    </div>
-                    <div class="setting-card">
                         <div class="label">AI 引擎</div>
-                        <div class="value" style="color:${status.ai ? 'var(--success)' : 'var(--warning)'};">${status.ai ? '就绪' : '加载中'}</div>
+                        <div class="value" id="qd-mon-ai">…</div>
                     </div>
                     <div class="setting-card">
-                        <div class="label">微服务</div>
-                        <div class="value" style="color:var(--text-secondary);">未启动</div>
+                        <div class="label">局域网 API</div>
+                        <div class="value" id="qd-mon-http" style="font-size:var(--fs-sm);">…</div>
                     </div>
                     <div class="setting-card">
-                        <div class="label">推理速度</div>
-                        <div class="value">~25.9 tok/s</div>
+                        <div class="label">容器 (rootfs)</div>
+                        <div class="value" id="qd-mon-container">…</div>
+                    </div>
+                    <div class="setting-card">
+                        <div class="label">运行时长</div>
+                        <div class="value" id="qd-mon-uptime" style="font-size:var(--fs-sm);">…</div>
+                    </div>
+                </div>
+                <div class="settings-grid" style="margin-top:10px;">
+                    <div class="setting-card">
+                        <div class="label">已服务对话</div>
+                        <div class="value" id="qd-mon-chats">…</div>
+                    </div>
+                    <div class="setting-card">
+                        <div class="label">模型文件</div>
+                        <div class="value" id="qd-mon-model" style="font-size:var(--fs-sm);">…</div>
                     </div>
                 </div>
                 <div style="margin-top:12px;padding:14px;background:var(--bg-secondary);border-radius:8px;">
                     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
                         <div>
-                            <div style="color:var(--text-secondary);font-size:var(--fs-sm);margin-bottom:4px;">AI 模型</div>
+                            <div style="color:var(--text-secondary);font-size:var(--fs-sm);margin-bottom:4px;">本地模型</div>
                             <div style="font-size:var(--fs);">Qwen2.5-1.5B-Instruct · MNN 4-bit</div>
-                            <div style="color:var(--text-secondary);font-size:var(--fs-sm);margin-top:2px;">状态：<span style="color:${modelColor};">${modelStatus}</span>${modelInfo.exists ? ` · ${modelInfo.sizeMB} MB` : ''}</div>
+                            <div style="color:var(--text-secondary);font-size:var(--fs-sm);margin-top:2px;">
+                                文件：<span id="qd-mon-model-file">…</span>
+                                &nbsp;|&nbsp; 引擎：<span id="qd-mon-model-engine">…</span>
+                            </div>
                         </div>
-                        ${!modelInfo.exists ? `
-                            <button id="download-model-btn" style="padding:8px 14px;border-radius:6px;border:none;background:var(--accent);color:white;cursor:pointer;font-size:var(--fs-sm);">⬇️ 去阿里官网下载</button>
-                        ` : `
-                            <span style="color:var(--success);font-size:var(--fs-sm);">✓ 已就绪</span>
-                        `}
+                        <span id="qd-mon-model-btn-slot"></span>
                     </div>
-                    ${!modelInfo.exists ? `
-                        <p style="color:var(--text-secondary);font-size:var(--fs-sm);line-height:1.6;margin-top:8px;">
-                            模型未下载，点击上方按钮前往阿里 ModelScope 下载 Qwen2.5-1.5B 模型。<br>
-                            下载后需转换为 MNN 格式并放置到模型目录。
-                        </p>
-                    ` : ''}
+                    <div id="qd-mon-model-hint" style="color:var(--text-secondary);font-size:var(--fs-sm);line-height:1.6;margin-top:8px;"></div>
                 </div>
             </div>
         `;
 
-        // 绑定下载按钮
-        if (!modelInfo.exists) {
-            setTimeout(() => {
-                document.getElementById('download-model-btn')?.addEventListener('click', () => {
-                    // 用外部浏览器打开（内置浏览器iframe打不开ModelScope）
-                    if (window.Qidian && Qidian.openExternalUrl) {
-                        Qidian.openExternalUrl('https://modelscope.cn/models/Qwen/Qwen2.5-1.5B-Instruct');
-                    } else {
-                        openInternalBrowser('https://modelscope.cn/models/Qwen/Qwen2.5-1.5B-Instruct');
-                    }
-                });
-            }, 50);
-        }
+        const fmtUptime = sec => {
+            if (!sec) return '—';
+            const m = Math.floor(sec / 60);
+            return m >= 1 ? m + ' 分 ' + (sec % 60) + ' 秒' : sec + ' 秒';
+        };
+        const set = (id, html) => {
+            const el = document.getElementById(id);
+            if (el) el.innerHTML = html;
+        };
+
+        const updateMonitor = snap => {
+            // 离开页面后 body.innerHTML 被重写，root 已脱离 DOM → 自动退订
+            const root = document.getElementById('qd-monitor-root');
+            if (!root || !document.contains(root)) {
+                QdStatus.off(updateMonitor);
+                return;
+            }
+
+            // AI 引擎
+            const aiOk = snap.ai;
+            set('qd-mon-ai',
+                `<span style="color:${aiOk ? 'var(--success)' : 'var(--warning)'};">${aiOk ? '● 运行中' : '● 未就绪'}</span>`);
+
+            // 局域网 API
+            set('qd-mon-http',
+                snap.http
+                    ? `<span style="color:var(--success);">● 监听中</span><br><span style="color:var(--text-secondary);">${snap.lan || ('端口 ' + snap.port)}</span>`
+                    : `<span style="color:var(--warning);">● 未监听</span>`);
+
+            // 容器：rootfs 就绪即可执行容器命令（proot 现按需启动，无常驻）
+            set('qd-mon-container',
+                snap.container
+                    ? `<span style="color:var(--success);">● 就绪</span>`
+                    : `<span style="color:var(--warning);">● 初始化中</span>`);
+
+            // 运行指标
+            set('qd-mon-uptime', fmtUptime(snap.uptime));
+            set('qd-mon-chats', (snap.chats || 0) + ' 次');
+
+            // 模型：文件下载 与 引擎加载 是两回事，分开显示
+            const fileOk = snap.modelExists === true;
+            set('qd-mon-model',
+                `<span style="color:${snap.modelExists === false ? 'var(--error)' : 'var(--text-secondary)'};">${snap.modelExists === false ? '未下载' : (fileOk ? snap.modelMB + ' MB' : '检查中')}</span>`);
+            set('qd-mon-model-file',
+                fileOk
+                    ? `<span style="color:var(--success);">已下载（${snap.modelMB} MB）</span>`
+                    : (snap.modelExists === false ? '<span style="color:var(--error);">未下载</span>' : '检查中'));
+            set('qd-mon-model-engine',
+                aiOk
+                    ? '<span style="color:var(--success);">已加载，可对话</span>'
+                    : (fileOk ? '<span style="color:var(--warning);">加载中（约 2~3 秒）</span>' : '<span style="color:var(--error);">无模型可加载</span>'));
+
+            // 下载按钮 / 提示（只在状态变化时重画一次，避免按钮被刷新打断点击）
+            const slot = document.getElementById('qd-mon-model-btn-slot');
+            if (slot && slot.dataset.state !== String(snap.modelExists)) {
+                slot.dataset.state = String(snap.modelExists);
+                if (snap.modelExists === false) {
+                    slot.innerHTML = '<button id="download-model-btn" style="padding:8px 14px;border-radius:6px;border:none;background:var(--accent);color:white;cursor:pointer;font-size:var(--fs-sm);">⬇️ 去阿里官网下载</button>';
+                    setTimeout(() => {
+                        document.getElementById('download-model-btn')?.addEventListener('click', () => {
+                            if (window.Qidian && Qidian.openExternalUrl) {
+                                Qidian.openExternalUrl('https://modelscope.cn/models/Qwen/Qwen2.5-1.5B-Instruct');
+                            } else {
+                                openInternalBrowser('https://modelscope.cn/models/Qwen/Qwen2.5-1.5B-Instruct');
+                            }
+                        });
+                    }, 50);
+                    set('qd-mon-model-hint', '模型未下载，点击上方按钮前往阿里 ModelScope 下载 Qwen2.5-1.5B 模型。<br>下载后需转换为 MNN 格式并放置到模型目录。');
+                } else {
+                    slot.innerHTML = fileOk ? '<span style="color:var(--success);font-size:var(--fs-sm);">✓ 文件就绪</span>' : '';
+                    set('qd-mon-model-hint', '');
+                }
+            }
+        };
+        QdStatus.on(updateMonitor);
     } else if (setting.name === 'AI 权限') {
+        // 权限状态实时查询：运行时权限走 checkPermission，
+        // 普通权限（INTERNET 等）安装即授予，如实标注来源。
+        const permState = t => {
+            try {
+                if (window.Qidian && Qidian.checkPermission) {
+                    return String(Qidian.checkPermission(t));
+                }
+            } catch (e) { }
+            return '未知';
+        };
+        const locGranted = permState('location') === '已授权';
+        const micGranted = permState('microphone') === '已授权';
+        const grantedSpan = ok => ok
+            ? '<span style="color:var(--success);font-size:var(--fs-sm);">已授权</span>'
+            : '<span style="color:var(--warning);font-size:var(--fs-sm);">未授权（点击下方请求）</span>';
+        const normalSpan = '<span style="color:var(--text-secondary);font-size:var(--fs-sm);">随应用安装授予</span>';
+
         body.innerHTML = `
             <div style="padding:16px;">
                 <h3 style="margin-bottom:14px;font-size:var(--fs-md);">AI 权限管理</h3>
@@ -1048,35 +1167,35 @@ function openSettingDetail(setting) {
                         <div class="perm-name">🌐 网络访问</div>
                         <div class="perm-desc">允许 AI 联网搜索实时信息</div>
                     </div>
-                    <span style="color:var(--success);font-size:var(--fs-sm);">已授权</span>
+                    ${normalSpan}
                 </div>
                 <div class="perm-item" id="perm-location" style="cursor:pointer;">
                     <div>
                         <div class="perm-name">📍 位置信息</div>
                         <div class="perm-desc">允许 AI 读取设备位置</div>
                     </div>
-                    <span style="color:var(--accent);font-size:var(--fs-sm);text-decoration:underline;">请求授权</span>
+                    <span id="perm-location-state">${grantedSpan(locGranted)}</span>
                 </div>
                 <div class="perm-item" id="perm-mic" style="cursor:pointer;">
                     <div>
                         <div class="perm-name">🎤 麦克风</div>
                         <div class="perm-desc">允许 AI 录制语音输入</div>
                     </div>
-                    <span style="color:var(--accent);font-size:var(--fs-sm);text-decoration:underline;">请求授权</span>
+                    <span id="perm-mic-state">${grantedSpan(micGranted)}</span>
                 </div>
                 <div class="perm-item" id="perm-audio">
                     <div>
                         <div class="perm-name">🔊 听筒/扬声器</div>
                         <div class="perm-desc">允许 AI 播放语音回复</div>
                     </div>
-                    <span style="color:var(--success);font-size:var(--fs-sm);">已授权</span>
+                    ${normalSpan}
                 </div>
                 <div class="perm-item" id="perm-storage">
                     <div>
                         <div class="perm-name">📁 文件读取</div>
-                        <div class="perm-desc">允许 AI 读取系统模块和授权文件</div>
+                        <div class="perm-desc">读取系统模块与界面文件（应用私有目录）</div>
                     </div>
-                    <span style="color:var(--success);font-size:var(--fs-sm);">已授权</span>
+                    <span style="color:var(--text-secondary);font-size:var(--fs-sm);">应用私有目录 · 无需授权</span>
                 </div>
                 <p style="margin-top:14px;color:var(--text-secondary);font-size:var(--fs-sm);line-height:1.6;">
                     权限由 AI.qd/ai_config.qdai 配置文件管理，AI 可在授权范围内调用对应能力。涉及隐私操作时需用户确认。
@@ -1090,23 +1209,18 @@ function openSettingDetail(setting) {
             const micItem = document.getElementById('perm-mic');
 
             function refreshPermStatus() {
-                // 延迟检查权限状态并刷新
+                // 延迟检查权限状态并刷新（授权对话框关闭后生效有延迟）
                 setTimeout(() => {
                     if (window.Qidian && Qidian.checkPermission) {
                         const locStatus = Qidian.checkPermission('location');
                         const micStatus = Qidian.checkPermission('microphone');
-                        const locEl = document.querySelector('#perm-location span:last-child');
-                        const micEl = document.querySelector('#perm-mic span:last-child');
-                        if (locEl) {
-                            locEl.textContent = locStatus === '已授权' ? '已授权' : '请求授权';
-                            locEl.style.color = locStatus === '已授权' ? 'var(--success)' : 'var(--accent)';
-                            if (locStatus === '已授权') locEl.style.textDecoration = 'none';
-                        }
-                        if (micEl) {
-                            micEl.textContent = micStatus === '已授权' ? '已授权' : '请求授权';
-                            micEl.style.color = micStatus === '已授权' ? 'var(--success)' : 'var(--accent)';
-                            if (micStatus === '已授权') micEl.style.textDecoration = 'none';
-                        }
+                        const locEl = document.getElementById('perm-location-state');
+                        const micEl = document.getElementById('perm-mic-state');
+                        const span = ok => ok
+                            ? '<span style="color:var(--success);font-size:var(--fs-sm);">已授权</span>'
+                            : '<span style="color:var(--warning);font-size:var(--fs-sm);">未授权（点击请求）</span>';
+                        if (locEl) locEl.innerHTML = span(locStatus === '已授权');
+                        if (micEl) micEl.innerHTML = span(micStatus === '已授权');
                     }
                 }, 2000);
             }
@@ -1134,23 +1248,7 @@ function openSettingDetail(setting) {
                 });
             }
 
-            // 页面加载时先检查一次权限状态
-            if (window.Qidian && Qidian.checkPermission) {
-                const locStatus = Qidian.checkPermission('location');
-                const micStatus = Qidian.checkPermission('microphone');
-                const locEl = document.querySelector('#perm-location span:last-child');
-                const micEl = document.querySelector('#perm-mic span:last-child');
-                if (locEl && locStatus === '已授权') {
-                    locEl.textContent = '已授权';
-                    locEl.style.color = 'var(--success)';
-                    locEl.style.textDecoration = 'none';
-                }
-                if (micEl && micStatus === '已授权') {
-                    micEl.textContent = '已授权';
-                    micEl.style.color = 'var(--success)';
-                    micEl.style.textDecoration = 'none';
-                }
-            }
+            // 权限初始状态已在页面渲染时动态查询（见 permState），无需重复检查
         }, 100);
     } else if (setting.name === 'AI 配置') {
         body.innerHTML = `
@@ -1219,8 +1317,13 @@ function openSettingDetail(setting) {
             try { modelInfo = JSON.parse(Qidian.checkModelExists()); } catch (e) {}
         }
 
-        const localStatus = modelInfo.exists ? '已就绪' : '未下载';
-        const localColor = modelInfo.exists ? 'var(--success)' : 'var(--error)';
+        // 区分「模型文件已下载」与「引擎已加载」两个独立状态（QdStatus 实时数据）
+        const localStatus = !QdStatus.snap.modelExists
+            ? '未下载'
+            : (QdStatus.snap.ai ? '运行中' : '已下载 · 引擎加载中');
+        const localColor = !QdStatus.snap.modelExists
+            ? 'var(--error)'
+            : (QdStatus.snap.ai ? 'var(--success)' : 'var(--warning)');
 
         body.innerHTML = `
             <div style="padding:16px;">
@@ -1515,6 +1618,121 @@ function setupChatInput() {
         }
     });
 }
+
+// ========== 实时状态中心 ==========
+// 规则：界面上所有「就绪 / 运行中 / 在线」类的状态文字，必须从 QdStatus.snap 取，
+// 禁止写死。数据源：Qidian 桥（同步）+ 本机 /health（异步，带 CORS）。
+// 每 2 秒自动刷新一次，订阅者立即收到最新快照。
+const QdStatus = {
+    snap: {
+        container: false,   // rootfs 就绪（可执行容器命令）
+        ai: false,          // MNN 引擎已加载
+        http: false,        // 局域网 API 监听中
+        port: -1,
+        lan: '',
+        uptime: 0,          // App 进程内服务运行秒数
+        chats: 0,           // 已服务对话次数
+        modelExists: null,  // 模型文件是否已下载（null=未知）
+        modelMB: 0
+    },
+    subs: [],
+    _timer: null,
+
+    refresh() {
+        try {
+            if (window.Qidian && Qidian.getStatus) {
+                Object.assign(this.snap, JSON.parse(Qidian.getStatus()));
+            }
+        } catch (e) { }
+        try {
+            if (window.Qidian && Qidian.getHttpInfo) {
+                const raw = Qidian.getHttpInfo();
+                this.snap._rawHttp = raw;
+                const h = JSON.parse(raw);
+                this.snap.http = !!h.listening;
+                this.snap.port = h.port || -1;
+                this.snap.lan = h.lan || '';
+                if (typeof h.uptime === 'number') this.snap.uptime = h.uptime;
+                if (typeof h.chats === 'number') this.snap.chats = h.chats;
+            }
+        } catch (e) {
+            this.snap._rawHttp = '异常: ' + e.message;
+        }
+        try {
+            if (window.Qidian && Qidian.checkModelExists) {
+                const m = JSON.parse(Qidian.checkModelExists());
+                this.snap.modelExists = !!m.exists;
+                this.snap.modelMB = m.sizeMB || 0;
+            }
+        } catch (e) { }
+
+        // /health 由 App 内 LocalHttpServer 提供，带 CORS 头，可直接 fetch。
+        // 拿 uptime / chats 这类桥接口没有的运行指标。
+        try {
+            fetch('http://127.0.0.1:9999/health', { cache: 'no-store' })
+                .then(r => r.json())
+                .then(h => {
+                    this.snap.uptime = h.uptime || 0;
+                    this.snap.chats = h.chats || 0;
+                    if (typeof h.ai === 'boolean') this.snap.ai = h.ai;
+                    this._notify();
+                })
+                .catch(function () { });
+        } catch (e) { }
+
+        this._notify();
+    },
+
+    /** 注册回调，注册时立即收到一次当前快照 */
+    on(cb) {
+        this.subs.push(cb);
+        try { cb(this.snap); } catch (e) { }
+    },
+
+    /** 取消订阅 */
+    off(cb) {
+        const i = this.subs.indexOf(cb);
+        if (i >= 0) this.subs.splice(i, 1);
+    },
+
+    _notify() {
+        this.subs.forEach(cb => { try { cb(this.snap); } catch (e) { } });
+    },
+
+    start() {
+        if (this._timer) return;
+        this.refresh();
+        this._timer = setInterval(() => this.refresh(), 2000);
+    }
+};
+QdStatus.start();
+
+// 全局状态灯：颜色实时反映引擎状态；点按显示完整快照
+(function () {
+    QdStatus.on(s => {
+        const d = document.getElementById('qd-status-dot');
+        if (!d) return;
+        d.style.background = s.ai ? '#4caf50'
+            : (s.modelExists === false ? '#f44336' : '#ff9800');
+    });
+    document.getElementById('qd-status-dot')?.addEventListener('click', () => {
+        const s = QdStatus.snap;
+        const fmt = sec => {
+            if (!sec) return '—';
+            const m = Math.floor(sec / 60);
+            return m >= 1 ? m + ' 分 ' + (sec % 60) + ' 秒' : sec + ' 秒';
+        };
+        alert(
+            '实时系统状态（每 2 秒自动刷新）\n\n'
+            + 'AI 引擎: ' + (s.ai ? '✓ 运行中' : '✗ 未就绪') + '\n'
+            + '局域网 API: ' + (s.http ? '✓ 监听中 · ' + (s.lan || ('端口 ' + s.port)) : '✗ 未监听') + '\n'
+            + '容器(rootfs): ' + (s.container ? '✓ 就绪' : '… 初始化中') + '\n'
+            + '模型文件: ' + (s.modelExists ? '✓ 已下载 ' + s.modelMB + ' MB' : '✗ 未下载') + '\n'
+            + '服务运行时长: ' + fmt(s.uptime) + '\n'
+            + '已服务对话: ' + s.chats + ' 次'
+        );
+    });
+})();
 
 // ========== 容器调用健壮层（拔线/后台被杀后自动等待重建） ==========
 // execContainer 在 rootfsDir 尚未就绪时返回 "[容器未启动]"。
@@ -2282,82 +2500,9 @@ async function intentAgentLoop(userText, onThinking, onToolCall, onAnswer) {
     return { answer: fullResponse, thinking: '', fullResponse };
 }
 
-// ========== 局域网HTTP API服务 ==========
-// 安全启动，出错不影响主功能
-try {
-    // 测试JS是否在运行
-    if (window.Qidian && Qidian.execContainer) {
-        Qidian.execContainer('echo "js loaded" > /tmp/js_test.txt');
-    }
-
-    var apiBusy = false;
-    var httpStarted = false;
-
-    // 轮询等待Qidian就绪，然后启动HTTP服务和桥接
-    var waitTimer = setInterval(function() {
-        if (httpStarted) {
-            clearInterval(waitTimer);
-            return;
-        }
-        if (!window.Qidian || !Qidian.execContainer || !Qidian.callAI) return;
-        httpStarted = true;
-        clearInterval(waitTimer);
-
-        try {
-            // HTTP 服务已并入 /系统/微服务.qd/microsrv.qds（v2: 9999 HTTP + 8822 状态）
-            // 这里只保留 AI 桥接：microsrv 写 /tmp/api_request，我们读完调 AI 再写回 /tmp/api_response。
-            Qidian.execContainer('echo "bridge-only mode (HTTP served by microsrv.qds)" > /tmp/http_debug.log');
-
-            // 清掉上一代 shell 服务，避免和 microsrv 抢 9999 端口
-            Qidian.execContainer('pkill -f http_server.sh 2>/dev/null; pkill -f "toybox nc -l" 2>/dev/null');
-
-            // 启动AI请求桥接轮询
-            Qidian.execContainer('echo "bridge started" > /tmp/bridge_debug.log');
-            setInterval(function() {
-                if (apiBusy) return;
-                if (!window.Qidian || !Qidian.execContainer || !Qidian.callAI) return;
-                try {
-                    var exists = Qidian.execContainer('test -f /tmp/api_request && echo yes || echo no').trim();
-                    if (exists !== 'yes') return;
-                    apiBusy = true;
-
-                    var prompt = Qidian.execContainer('cat /tmp/api_request').trim();
-                    Qidian.execContainer('rm -f /tmp/api_request');
-
-                    Qidian.execContainer('echo "got prompt: ' + prompt.substring(0, 50).replace(/"/g, '') + '" >> /tmp/bridge_debug.log');
-
-                    if (!prompt) {
-                        Qidian.execContainer('echo \'{"error":"empty"}\' > /tmp/api_response');
-                        apiBusy = false;
-                        return;
-                    }
-
-                    var resp = Qidian.callAI(prompt);
-                    Qidian.execContainer('echo "got resp, len=' + resp.length + '" >> /tmp/bridge_debug.log');
-
-                    // 用base64编码写入，避免引号问题
-                    var result = '{"response":"' + resp.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n') + '"}';
-                    var b64 = btoa(unescape(encodeURIComponent(result)));
-                    Qidian.execContainer('echo "' + b64 + '" | base64 -d > /tmp/api_response');
-                    Qidian.execContainer('echo "resp written" >> /tmp/bridge_debug.log');
-                } catch (e) {
-                    Qidian.execContainer('echo "error: ' + e.message.replace(/"/g, '').substring(0, 100) + '" >> /tmp/bridge_debug.log');
-                    try {
-                        Qidian.execContainer('echo \'{"error":"bridge error"}\' > /tmp/api_response');
-                    } catch (e2) {}
-                }
-                apiBusy = false;
-            }, 1000);
-
-            console.log('[AI Bridge] ready — HTTP 由 microsrv.qds 提供 (9999)');
-        } catch (e) {
-            try {
-                Qidian.execContainer('echo "error: ' + e.message.replace(/"/g, '') + '" >> /tmp/http_debug.log');
-            } catch (e2) {}
-            console.warn('[HTTP API] Start failed:', e);
-        }
-    }, 1000);
-
-} catch (e) {
-    console.warn('[HTTP API] Init failed:', e);
-}
+// ============================================================
+// 说明：HTTP API 与 AI 桥接已由 App 原生层提供（LocalHttpServer.kt，
+// 端口 9999/8822，直接调用 MNN 推理），不再需要 WebView 轮询桥。
+// 旧版此处有一段每秒 execContainer 检查 /tmp/api_request 的轮询代码，
+// 会反复启动 proot 进程且功能已被替代，已移除。
+// ============================================================

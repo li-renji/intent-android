@@ -470,7 +470,9 @@ class MainActivity : Activity() {
             val port = s?.boundHttpPort ?: -1
             val lan = if (listening) s!!.lanAddress() else ""
             val ai = MainActivity.aiService != null
-            return "{\"listening\":$listening,\"port\":$port,\"lan\":\"$lan\",\"ai\":$ai}"
+            val uptime = s?.uptimeSec() ?: 0L
+            val chats = s?.chatCount() ?: 0L
+            return "{\"listening\":$listening,\"port\":$port,\"lan\":\"$lan\",\"ai\":$ai,\"uptime\":$uptime,\"chats\":$chats}"
         }
 
         @JavascriptInterface
