@@ -47,6 +47,7 @@
         <!-- 中间列表栏 -->
         <div class="list-panel">
             <div class="list-header">
+                <button id="qd-menu-btn" class="qd-menu-btn" title="菜单">☰</button>
                 <h2 id="list-title">消息</h2>
             </div>
             <div class="list-content" id="list-content"></div>
@@ -55,6 +56,7 @@
         <!-- 右侧内容区 -->
         <div class="content-panel">
             <div class="content-header" id="content-header">
+                <button id="qd-back" class="qd-back-btn" title="返回">‹</button>
                 <span>起点OS mini</span>
             </div>
             <div class="content-body" id="content-body">
@@ -70,9 +72,12 @@
         </div>
     </div>
     <!-- 全局实时状态灯：绿=AI 就绪，黄=加载中，红=异常。点按显示详情。
-         数据由 app.js 的 QdStatus 每 2 秒刷新，不随页面切换重建。 -->
-    <div id="qd-status-dot" title="系统状态"
-         style="position:fixed;top:12px;right:16px;width:9px;height:9px;border-radius:50%;background:#888;z-index:9999;cursor:pointer;box-shadow:0 0 5px rgba(0,0,0,.35);"></div>
+         数据由 app.js 的 QdStatus 每 2 秒刷新。
+         不用 fixed 定位（部分双屏/刘海设备布局视口与可见区对不齐，会跑出屏幕），
+         由 app.js 的 placeDot() 自动挂到当前顶栏右侧。 -->
+    <div id="qd-status-dot" class="qd-status-dot" title="系统状态"></div>
+    <!-- 竖屏导航抽屉遮罩：点按关闭抽屉 -->
+    <div class="qd-drawer-mask" id="qd-drawer-mask"></div>
     <script src="app.js"></script>
 </body>
 </html>

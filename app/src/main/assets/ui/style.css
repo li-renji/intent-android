@@ -47,7 +47,7 @@ body {
     user-select: none;
 }
 
-.app { display: flex; height: 100vh; width: 100vw; }
+.app { display: flex; height: 100vh; width: 100vw; overflow: hidden; }
 
 /* ===== 左侧导航栏 ===== */
 .sidebar {
@@ -175,6 +175,10 @@ body {
     display: flex;
     flex-direction: column;
     flex-shrink: 0;
+    /* 关键：防止长文本把面板撑爆（本机 WebView 的 flex 最小尺寸计算有怪癖，
+       超长消息预览曾把 list-panel 撑到 2254px，右缘的状态灯被推出屏幕外） */
+    min-width: 0;
+    overflow: hidden;
 }
 
 .list-header {
@@ -186,7 +190,7 @@ body {
 }
 .list-header h2 { font-size: var(--fs-md); font-weight: 600; }
 
-.list-content { flex: 1; overflow-y: auto; }
+.list-content { flex: 1; overflow-y: auto; overflow-x: hidden; }
 
 .list-group-header {
     padding: 6px 12px;
@@ -476,3 +480,109 @@ body {
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
 ::-webkit-scrollbar-thumb:hover { background: var(--text-secondary); }
+
+/* ===== 可复制信息条（长按或点「复制」即可复制）===== */
+[data-copy] { -webkit-user-select: text; user-select: text; cursor: copy; }
+.qd-kv {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 9px 10px;
+    border-radius: 8px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    margin-bottom: 8px;
+    font-size: var(--fs);
+}
+.qd-kv span { color: var(--text-secondary); flex-shrink: 0; }
+.qd-kv b { flex: 1; font-weight: 500; word-break: break-all; }
+.qd-kv em {
+    font-style: normal;
+    flex-shrink: 0;
+    color: var(--accent);
+    cursor: pointer;
+    padding: 3px 8px;
+    border-radius: 6px;
+    background: var(--bg-hover);
+    font-size: var(--fs-sm);
+}
+.qd-modal-sub { color: var(--text-secondary); font-size: var(--fs-sm); margin: 4px 0 12px; }
+
+/* ===== 竖屏：微信式布局 =====
+   主页 = 消息列表占满全屏；点进会话 = 聊天页整屏（带返回键）；
+   主页左缘右滑 = 呼出导航抽屉。横屏保持原三栏布局不动。 */
+.qd-back-btn,
+.qd-menu-btn {
+    display: none;
+    align-items: center;
+    justify-content: center;
+    width: 30px;
+    height: 30px;
+    border: none;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--text-primary);
+    font-size: 20px;
+    line-height: 1;
+    cursor: pointer;
+    flex-shrink: 0;
+}
+.qd-back-btn:active,
+.qd-menu-btn:active { background: var(--bg-hover); }
+.qd-drawer-mask { display: none; }
+
+@media (orientation: portrait) {
+    /* 侧边栏 → 抽屉 */
+    .sidebar {
+        position: fixed;
+        left: 0;
+        top: 0;
+        bottom: 0;
+        width: 240px;
+        z-index: 500;
+        transform: translateX(-100%);
+        transition: transform 0.25s ease;
+        box-shadow: 4px 0 20px rgba(0, 0, 0, 0.35);
+        padding-top: 14px;
+    }
+    body.qd-drawer-open .sidebar { transform: translateX(0); }
+    .qd-drawer-mask {
+        display: block;
+        position: fixed;
+        inset: 0;
+        background: rgba(0, 0, 0, 0.45);
+        z-index: 400;
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 0.25s;
+    }
+    body.qd-drawer-open .qd-drawer-mask { opacity: 1; pointer-events: auto; }
+
+    /* 主页：列表占满全屏 */
+    .list-panel { width: auto; flex: 1; min-width: 0; overflow: hidden; border-right: none; }
+    .qd-menu-btn { display: flex; }
+
+    /* 详情/聊天页：整屏覆盖 */
+    .content-panel {
+        display: none;
+        position: fixed;
+        inset: 0;
+        z-index: 600;
+        background: var(--bg-primary);
+    }
+    body.qd-in-detail .content-panel { display: flex; }
+    .qd-back-btn { display: flex; }
+    .content-header { justify-content: flex-start; gap: 10px; }
+}
+
+/* 状态灯：流式布局版本，由 placeDot() 挂到当前顶栏 */
+.qd-status-dot {
+    width: 13px;
+    height: 13px;
+    border-radius: 50%;
+    background: #888;
+    cursor: pointer;
+    flex-shrink: 0;
+    margin-left: auto;
+    box-shadow: 0 0 5px rgba(0, 0, 0, 0.35);
+}

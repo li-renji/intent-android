@@ -118,23 +118,33 @@ function setupHeaderButtons() {
                     renderList();
                     renderEmptyContent();
                 } else if (action === 'about') {
-                    let apiInfo = '';
+                    let rows = '';
                     try {
                         if (window.Qidian && Qidian.getHttpInfo) {
                             const info = JSON.parse(Qidian.getHttpInfo());
                             if (info.listening) {
-                                apiInfo = '\n\n── 给 Agent 配置（OpenAI 兼容）──\n'
-                                    + 'Base URL: http://' + info.lan + '/v1\n'
-                                    + 'API Key: ' + (info.apiKey || '（生成中，稍后再看）') + '\n'
-                                    + '模型名: qwen2.5-1.5b-mnn\n\n'
-                                    + '在支持自定义 OpenAI 接口的 Agent / 客户端里填上面的 Base URL 和 Key 即可。\n'
-                                    + '电脑浏览器打开 http://' + info.lan + ' 可看完整用法。';
+                                const baseUrl = 'http://' + info.lan + '/v1';
+                                const key = info.apiKey || '（生成中，稍后再看）';
+                                rows = `
+                                    <div class="qd-kv" data-copy="${baseUrl}"><span>Base URL</span><b>${baseUrl}</b><em>复制</em></div>
+                                    <div class="qd-kv" data-copy="${key}"><span>API Key</span><b>${key}</b><em>复制</em></div>
+                                    <div class="qd-kv" data-copy="qwen2.5-1.5b-mnn"><span>模型名</span><b>qwen2.5-1.5b-mnn</b><em>复制</em></div>
+                                    <p style="color:var(--text-secondary);font-size:var(--fs-sm);line-height:1.6;margin-top:10px;">
+                                        在 Agent / 客户端里按 OpenAI 兼容格式填上面三项。
+                                        点「复制」或<b>长按条目</b>即可复制。
+                                    </p>`;
                             } else {
-                                apiInfo = '\n\n── 局域网 AI API ──\n未启动（9999 端口被占用或启动失败）';
+                                rows = '<p style="color:var(--text-secondary);font-size:var(--fs-sm);">局域网 API 未启动（9999 端口被占用或启动失败）</p>';
                             }
                         }
                     } catch (e) { }
-                    alert('起点OS mini v1.0\n\n本地 AI: Qwen2.5-1.5B (MNN)\n模块化系统 (.qd/.qds/.qdai)' + apiInfo);
+                    qdModal(`
+                        <h3 style="font-size:var(--fs-lg);margin-bottom:6px;">起点OS mini v1.0</h3>
+                        <p style="color:var(--text-secondary);font-size:var(--fs-sm);margin-bottom:12px;">
+                            本地 AI: Qwen2.5-1.5B (MNN) · 模块化系统 (.qd/.qds/.qdai)
+                        </p>
+                        ${rows}
+                    `);
                 }
             });
         });
@@ -183,6 +193,7 @@ function setupNavigation() {
             currentSetting = null;
             pageHistory = [];  // 切换主导航时清空页面栈
             isAiThinking = false;
+            document.body.classList.remove('qd-drawer-open');  // 竖屏抽屉：选中后收回
             renderList();
             if (currentPage === 'knowledge') {
                 knowledgePath = [''];
@@ -193,6 +204,119 @@ function setupNavigation() {
         });
     });
 }
+
+// ========== 竖屏：微信式导航（主页列表 → 点进详情，左缘右滑抽屉/返回） ==========
+// 横屏保持原三栏布局，这里的逻辑只影响竖屏（CSS 用 @media orientation: portrait）。
+
+/** 返回列表主页（等价于重新点击当前导航项的列表部分）。 */
+function qdGoBackToList() {
+    currentChat = null;
+    currentSetting = null;
+    isAiThinking = false;
+    renderList();
+    if (currentPage === 'knowledge') {
+        renderKnowledgeContent();
+    } else {
+        renderEmptyContent();
+    }
+}
+
+(function setupPortraitNav() {
+    // ===== 状态灯挂载：跟随当前顶栏右侧 =====
+    // fixed 定位在这台设备的竖屏下不可靠（布局视口与可见区对不齐，灯会跑出屏幕），
+    // 改为把灯挂进 list-header（主页）或 content-header（详情页），随页面自动搬家。
+    const dot = document.getElementById('qd-status-dot');
+    const listHeader = document.querySelector('.list-header');
+    const contentHeader = document.getElementById('content-header');
+    if (dot && listHeader && contentHeader) {
+        console.log('[dot] placeDot init ok, dot parent=', dot.parentElement && dot.parentElement.className);
+        const placeDot = function () {
+            const inDetail = document.body.classList.contains('qd-in-detail');
+            const target = inDetail ? contentHeader : listHeader;
+            if (target && dot.parentElement !== target) {
+                target.appendChild(dot);
+                // 顶栏改为左对齐布局：标题靠左，灯靠右（margin-left:auto）
+                target.style.justifyContent = 'flex-start';
+                target.style.gap = '10px';
+            }
+        };
+        placeDot();
+        // 页面切换会重写 header.innerHTML（灯被冲掉）或切换详情模式 → 自动搬回去
+        new MutationObserver(placeDot).observe(listHeader, { childList: true });
+        new MutationObserver(placeDot).observe(contentHeader, { childList: true, subtree: true });
+        new MutationObserver(placeDot).observe(document.body, { attributes: true, attributeFilter: ['class'] });
+    } else {
+        console.error('[dot] init FAILED dot=', !!dot, 'listHeader=', !!listHeader, 'contentHeader=', !!contentHeader);
+    }
+
+    // 返回键 / 抽屉按钮 / 遮罩
+    document.getElementById('qd-back')?.addEventListener('click', qdGoBackToList);
+    document.getElementById('qd-menu-btn')?.addEventListener('click', () => {
+        document.body.classList.add('qd-drawer-open');
+    });
+    document.getElementById('qd-drawer-mask')?.addEventListener('click', () => {
+        document.body.classList.remove('qd-drawer-open');
+    });
+
+    // 详情模式开关：content-body 被填入真实内容 → 进入详情；出现空态 → 退回主页。
+    // 用 MutationObserver 挂钩所有渲染入口（聊天/应用/设置/浏览器…），不用逐个函数改。
+    const bodyEl = document.getElementById('content-body');
+    const headerEl = document.getElementById('content-header');
+    if (bodyEl && headerEl) {
+        // 详情顶栏被各渲染函数重写时会丢掉返回按钮，这里自动补回。
+        // 基础 CSS 里 .qd-back-btn 是 display:none，只有竖屏媒体查询才显示，
+        // 所以横屏下多注入的这个按钮不可见，无需判断方向。
+        const ensureBack = function () {
+            if (!document.getElementById('qd-back')) {
+                const btn = document.createElement('button');
+                btn.id = 'qd-back';
+                btn.className = 'qd-back-btn';
+                btn.title = '返回';
+                btn.textContent = '‹';
+                btn.addEventListener('click', qdGoBackToList);
+                headerEl.insertBefore(btn, headerEl.firstChild);
+            }
+        };
+        const apply = function () {
+            const inDetail = bodyEl.children.length > 0 && !bodyEl.querySelector('.empty-state');
+            document.body.classList.toggle('qd-in-detail', inDetail);
+            if (inDetail) ensureBack();
+        };
+        new MutationObserver(apply).observe(headerEl, { childList: true, subtree: true });
+        new MutationObserver(apply).observe(bodyEl, { childList: true, subtree: true });
+    }
+
+    // 边缘手势：主页左缘右滑 = 呼出抽屉；详情页左缘右滑 = 返回列表；抽屉左滑 = 收起
+    // 注：原生层已为左缘中段 200dp 申请了系统手势排除区，这段区域由 App 接管；
+    //     排除区之外更靠内的起点也能触发（sx<=150），保证不同 ROM 下都能滑出来。
+    const isPortrait = () => window.matchMedia && window.matchMedia('(orientation: portrait)').matches;
+    let sx = 0, sy = 0, tracking = false;
+    document.addEventListener('touchstart', function (e) {
+        if (!isPortrait() || e.touches.length !== 1) { tracking = false; return; }
+        const t = e.touches[0];
+        sx = t.clientX;
+        sy = t.clientY;
+        tracking = true;
+    }, { passive: true });
+    document.addEventListener('touchend', function (e) {
+        if (!tracking) return;
+        tracking = false;
+        if (!isPortrait()) return;
+        const t = e.changedTouches[0];
+        const dx = t.clientX - sx;
+        const dy = t.clientY - sy;
+        if (Math.abs(dx) < 70 || Math.abs(dy) > 60) return;   // 排除纵向滚动
+        if (dx > 0 && sx <= 150) {
+            if (document.body.classList.contains('qd-in-detail')) {
+                qdGoBackToList();
+            } else if (!document.body.classList.contains('qd-drawer-open')) {
+                document.body.classList.add('qd-drawer-open');
+            }
+        } else if (dx < 0 && document.body.classList.contains('qd-drawer-open')) {
+            document.body.classList.remove('qd-drawer-open');
+        }
+    }, { passive: true });
+})();
 
 // ========== 搜索 ==========
 function setupSearch() {
@@ -967,7 +1091,15 @@ function openSettingDetail(setting) {
 
     if (setting.name === '外观设置') {
         const currentTheme = localStorage.getItem('theme') || 'dark';
-        const currentOrientation = localStorage.getItem('orientation') || 'landscape';
+        // 方向的唯一数据源是原生桥（SharedPreferences）：mode=设置的值，actual=系统真实方向。
+        // 之前这里读 localStorage，和原生两份数据会打架——显示竖屏、实际横屏就是这么来的。
+        let ori = { mode: localStorage.getItem('orientation') || 'landscape', actual: '' };
+        try {
+            if (window.Qidian && Qidian.getOrientation) ori = JSON.parse(Qidian.getOrientation());
+        } catch (e) { }
+        const currentOrientation = ori.mode || 'landscape';
+        const actualTxt = ori.actual === 'portrait' ? '竖屏' : (ori.actual === 'landscape' ? '横屏' : '检测中…');
+        const mismatch = ori.actual && ori.actual !== currentOrientation;
         body.innerHTML = `
             <div style="padding:16px;">
                 <div style="padding:14px;background:var(--bg-secondary);border-radius:8px;margin-bottom:12px;">
@@ -978,12 +1110,16 @@ function openSettingDetail(setting) {
                     </div>
                 </div>
                 <div style="padding:14px;background:var(--bg-secondary);border-radius:8px;">
-                    <div style="font-size:var(--fs);color:var(--text-primary);margin-bottom:10px;">📱 屏幕方向</div>
+                    <div style="font-size:var(--fs);color:var(--text-primary);margin-bottom:4px;">📱 屏幕方向</div>
+                    <p style="color:var(--text-secondary);font-size:var(--fs-sm);margin-bottom:10px;">
+                        当前实际方向：${actualTxt}（数据实时读自系统，不是写死的）
+                        ${mismatch ? '<br>⚠️ 与所选不一致：正在切换中，画面刷新后即生效' : ''}
+                    </p>
                     <div style="display:flex;gap:8px;">
                         <button id="ori-landscape" style="flex:1;padding:10px;border-radius:6px;border:2px solid ${currentOrientation === 'landscape' ? 'var(--accent)' : 'var(--border)'};background:${currentOrientation === 'landscape' ? 'var(--bg-active)' : 'var(--bg-hover)'};color:var(--text-primary);cursor:pointer;font-size:var(--fs);">🔄 横屏</button>
                         <button id="ori-portrait" style="flex:1;padding:10px;border-radius:6px;border:2px solid ${currentOrientation === 'portrait' ? 'var(--accent)' : 'var(--border)'};background:${currentOrientation === 'portrait' ? 'var(--bg-active)' : 'var(--bg-hover)'};color:var(--text-primary);cursor:pointer;font-size:var(--fs);">📱 竖屏</button>
                     </div>
-                    <p style="margin-top:8px;color:var(--text-secondary);font-size:var(--fs-sm);">切换后立即生效，重启后保持设置</p>
+                    <p style="margin-top:8px;color:var(--text-secondary);font-size:var(--fs-sm);">切换后立即生效并保存到系统存储，重启 / 侧滑返回 / 任务切换后都保持</p>
                 </div>
             </div>
         `;
@@ -1048,7 +1184,7 @@ function openSettingDetail(setting) {
                         <div class="value" id="qd-mon-model" style="font-size:var(--fs-sm);">…</div>
                     </div>
                 </div>
-                <div style="margin-top:12px;padding:14px;background:var(--bg-secondary);border-radius:8px;">
+                <div style="margin-top:12px;padding:14px;background:var(--bg-secondary);border-radius:8px;" class="qd-info-block" id="qd-mon-model-block">
                     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
                         <div>
                             <div style="color:var(--text-secondary);font-size:var(--fs-sm);margin-bottom:4px;">本地模型</div>
@@ -1074,6 +1210,12 @@ function openSettingDetail(setting) {
             const el = document.getElementById(id);
             if (el) el.innerHTML = html;
         };
+        // 把纯文本写进所在卡片的 data-copy，长按卡片即可复制
+        const setCopy = (id, text) => {
+            const el = document.getElementById(id);
+            const card = el && el.closest('.setting-card, .qd-info-block');
+            if (card && text) card.setAttribute('data-copy', text);
+        };
 
         const updateMonitor = snap => {
             // 离开页面后 body.innerHTML 被重写，root 已脱离 DOM → 自动退订
@@ -1087,27 +1229,33 @@ function openSettingDetail(setting) {
             const aiOk = snap.ai;
             set('qd-mon-ai',
                 `<span style="color:${aiOk ? 'var(--success)' : 'var(--warning)'};">${aiOk ? '● 运行中' : '● 未就绪'}</span>`);
+            setCopy('qd-mon-ai', 'AI 引擎: ' + (aiOk ? '运行中' : '未就绪'));
 
             // 局域网 API
             set('qd-mon-http',
                 snap.http
                     ? `<span style="color:var(--success);">● 监听中</span><br><span style="color:var(--text-secondary);">${snap.lan || ('端口 ' + snap.port)}</span>`
                     : `<span style="color:var(--warning);">● 未监听</span>`);
+            setCopy('qd-mon-http', snap.http && snap.lan ? '局域网 API: http://' + snap.lan : '局域网 API: 未监听');
 
             // 容器：rootfs 就绪即可执行容器命令（proot 现按需启动，无常驻）
             set('qd-mon-container',
                 snap.container
                     ? `<span style="color:var(--success);">● 就绪</span>`
                     : `<span style="color:var(--warning);">● 初始化中</span>`);
+            setCopy('qd-mon-container', '容器(rootfs): ' + (snap.container ? '就绪' : '初始化中'));
 
             // 运行指标
             set('qd-mon-uptime', fmtUptime(snap.uptime));
+            setCopy('qd-mon-uptime', '服务运行时长: ' + fmtUptime(snap.uptime));
             set('qd-mon-chats', (snap.chats || 0) + ' 次');
+            setCopy('qd-mon-chats', '已服务对话: ' + (snap.chats || 0) + ' 次');
 
             // 模型：文件下载 与 引擎加载 是两回事，分开显示
             const fileOk = snap.modelExists === true;
             set('qd-mon-model',
                 `<span style="color:${snap.modelExists === false ? 'var(--error)' : 'var(--text-secondary)'};">${snap.modelExists === false ? '未下载' : (fileOk ? snap.modelMB + ' MB' : '检查中')}</span>`);
+            setCopy('qd-mon-model', '模型文件: ' + (snap.modelExists === false ? '未下载' : (fileOk ? '已下载 ' + snap.modelMB + ' MB' : '检查中')));
             set('qd-mon-model-file',
                 fileOk
                     ? `<span style="color:var(--success);">已下载（${snap.modelMB} MB）</span>`
@@ -1116,6 +1264,10 @@ function openSettingDetail(setting) {
                 aiOk
                     ? '<span style="color:var(--success);">已加载，可对话</span>'
                     : (fileOk ? '<span style="color:var(--warning);">加载中（约 2~3 秒）</span>' : '<span style="color:var(--error);">无模型可加载</span>'));
+            setCopy('qd-mon-model-block',
+                '本地模型: Qwen2.5-1.5B-Instruct · MNN 4-bit · 文件'
+                + (fileOk ? '已下载（' + snap.modelMB + ' MB）' : (snap.modelExists === false ? '未下载' : '检查中'))
+                + ' · 引擎' + (aiOk ? '已加载，可对话' : (fileOk ? '加载中' : '无模型可加载')));
 
             // 下载按钮 / 提示（只在状态变化时重画一次，避免按钮被刷新打断点击）
             const slot = document.getElementById('qd-mon-model-btn-slot');
@@ -1475,6 +1627,39 @@ function openSettingDetail(setting) {
                 }, 100);
             });
         }, 100);
+    } else if (setting.name === '关于') {
+        // API 接口信息（Base URL / API Key，全部可复制）
+        let apiRows = '';
+        try {
+            if (window.Qidian && Qidian.getHttpInfo) {
+                const h = JSON.parse(Qidian.getHttpInfo());
+                if (h.listening && h.apiKey) {
+                    apiRows = `
+                        <div class="qd-kv" data-copy="http://${h.lan}/v1"><span>Base URL</span><b>http://${h.lan}/v1</b><em>复制</em></div>
+                        <div class="qd-kv" data-copy="${h.apiKey}"><span>API Key</span><b>${h.apiKey.substring(0, 8)}••••••••</b><em>复制</em></div>
+                        <div class="qd-kv" data-copy="${h.apiKey}"><span>完整 Key</span><b style="font-size:var(--fs-sm);word-break:break-all;">${h.apiKey}</b><em>复制</em></div>`;
+                }
+            }
+        } catch (e) { }
+        body.innerHTML = `
+            <div style="display:flex;flex-direction:column;align-items:center;padding:30px 20px;">
+                <div class="detail-avatar">${setting.icon}</div>
+                <h3 style="margin-bottom:8px;font-size:var(--fs-lg);">起点OS mini</h3>
+                <p style="color:var(--text-secondary);font-size:var(--fs-sm);margin-bottom:4px;">版本 v1.0.0</p>
+                <p style="color:var(--text-secondary);font-size:var(--fs-sm);margin-bottom:16px;">基于 proot 容器 + MNN AI 引擎</p>
+                <div style="text-align:center;color:var(--text-secondary);font-size:var(--fs-sm);line-height:1.8;margin-bottom:16px;">
+                    <p>非 root 用户态容器</p>
+                    <p>奇点OS 模块化系统 (.qd/.qds/.qdai)</p>
+                    <p>本地 AI 驱动 · 可定制界面</p>
+                </div>
+                ${apiRows ? `
+                <div style="width:100%;max-width:360px;padding:12px 14px;background:var(--bg-secondary);border-radius:8px;">
+                    <div style="color:var(--text-secondary);font-size:var(--fs-sm);margin-bottom:8px;">🔌 局域网 API（长按条目即可复制）</div>
+                    ${apiRows}
+                </div>
+                <p style="color:var(--text-secondary);font-size:var(--fs-sm);margin-top:10px;text-align:center;">把 Base URL + API Key 填进任意支持 OpenAI 接口的 Agent，即可调用本机模型</p>` : ''}
+            </div>
+        `;
     } else {
         body.innerHTML = `
             <div style="display:flex;flex-direction:column;align-items:center;padding:40px 20px;">
@@ -1707,6 +1892,115 @@ const QdStatus = {
 };
 QdStatus.start();
 
+// ========== 通用工具：弹窗 / 复制 / 长按 ==========
+// alert() 里的文字在 WebView 里没法长按复制，所以关键信息一律走 qdModal()，
+// 条目带 data-copy 属性：点「复制」或长按 500ms 即复制到剪贴板。
+
+function qdToast(msg) {
+    let t = document.getElementById('qd-toast');
+    if (!t) {
+        t = document.createElement('div');
+        t.id = 'qd-toast';
+        t.style.cssText = 'position:fixed;left:50%;bottom:60px;transform:translateX(-50%);'
+            + 'padding:8px 16px;border-radius:8px;background:rgba(0,0,0,.75);color:#fff;'
+            + 'font-size:13px;z-index:100001;pointer-events:none;transition:opacity .25s;opacity:0';
+        document.body.appendChild(t);
+    }
+    t.textContent = msg;
+    t.style.opacity = '1';
+    clearTimeout(t._timer);
+    t._timer = setTimeout(function () { t.style.opacity = '0'; }, 1200);
+}
+
+function qdCopyFallback(text) {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.cssText = 'position:fixed;left:-9999px;top:0;opacity:0';
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    try { document.execCommand('copy'); } catch (e) { }
+    ta.remove();
+}
+
+/** 复制文本到剪贴板；file:// 源下 navigator.clipboard 可能被拒，自动降级。 */
+function qdCopyText(text, withToast) {
+    if (!text) return;
+    const done = function () { if (withToast !== false) qdToast('已复制'); };
+    try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text).then(done, function () { qdCopyFallback(text); done(); });
+            return;
+        }
+    } catch (e) { }
+    qdCopyFallback(text);
+    done();
+}
+
+/** 底部信息弹窗（替代 alert）：内容自定义，右上角状态灯和「关于」都用它。 */
+function qdModal(html) {
+    const old = document.getElementById('qd-modal-ov');
+    if (old) old.remove();
+    const ov = document.createElement('div');
+    ov.id = 'qd-modal-ov';
+    ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:100000;'
+        + 'display:flex;align-items:center;justify-content:center;';
+    const card = document.createElement('div');
+    card.style.cssText = 'background:var(--bg-secondary);border:1px solid var(--border);'
+        + 'border-radius:12px;max-width:420px;width:86%;max-height:80%;overflow-y:auto;'
+        + 'padding:18px;color:var(--text-primary);';
+    card.innerHTML = html
+        + '<div style="text-align:center;margin-top:14px;">'
+        + '<button id="qd-modal-close" style="padding:8px 22px;border-radius:8px;border:none;'
+        + 'background:var(--bg-active);color:var(--text-primary);cursor:pointer;">关闭</button></div>';
+    ov.appendChild(card);
+    ov.addEventListener('click', function (e) { if (e.target === ov) ov.remove(); });
+    document.body.appendChild(ov);
+    document.getElementById('qd-modal-close').addEventListener('click', function () { ov.remove(); });
+}
+
+// 「复制」小按钮：事件委托，弹窗内容重建也不用重新绑
+document.addEventListener('click', function (e) {
+    const em = e.target.closest('.qd-kv em');
+    if (em) {
+        const row = em.closest('.qd-kv');
+        if (row && row.getAttribute('data-copy')) qdCopyText(row.getAttribute('data-copy'));
+    }
+});
+
+// 长按 500ms 复制：任何带 data-copy 属性的元素（卡片、信息条…）
+(function () {
+    let timer = null, sx = 0, sy = 0;
+    document.addEventListener('touchstart', function (e) {
+        const el = e.target.closest('[data-copy]');
+        if (!el) return;
+        const t = e.touches[0];
+        sx = t.clientX;
+        sy = t.clientY;
+        timer = setTimeout(function () {
+            timer = null;
+            qdCopyText(el.getAttribute('data-copy'));
+            if (navigator.vibrate) { try { navigator.vibrate(30); } catch (err) { } }
+        }, 500);
+    }, { passive: true });
+    document.addEventListener('touchmove', function (e) {
+        if (!timer) return;
+        const t = e.touches[0];
+        if (Math.abs(t.clientX - sx) > 10 || Math.abs(t.clientY - sy) > 10) {
+            clearTimeout(timer);
+            timer = null;
+        }
+    }, { passive: true });
+    document.addEventListener('touchend', function () {
+        if (timer) { clearTimeout(timer); timer = null; }
+    }, { passive: true });
+    // 鼠标环境兜底：双击复制
+    document.addEventListener('dblclick', function (e) {
+        const el = e.target.closest('[data-copy]');
+        if (el) qdCopyText(el.getAttribute('data-copy'));
+    });
+})();
+
 // 全局状态灯：颜色实时反映引擎状态；点按显示完整快照
 (function () {
     QdStatus.on(s => {
@@ -1722,15 +2016,31 @@ QdStatus.start();
             const m = Math.floor(sec / 60);
             return m >= 1 ? m + ' 分 ' + (sec % 60) + ' 秒' : sec + ' 秒';
         };
-        alert(
-            '实时系统状态（每 2 秒自动刷新）\n\n'
-            + 'AI 引擎: ' + (s.ai ? '✓ 运行中' : '✗ 未就绪') + '\n'
-            + '局域网 API: ' + (s.http ? '✓ 监听中 · ' + (s.lan || ('端口 ' + s.port)) : '✗ 未监听') + '\n'
-            + '容器(rootfs): ' + (s.container ? '✓ 就绪' : '… 初始化中') + '\n'
-            + '模型文件: ' + (s.modelExists ? '✓ 已下载 ' + s.modelMB + ' MB' : '✗ 未下载') + '\n'
-            + '服务运行时长: ' + fmt(s.uptime) + '\n'
-            + '已服务对话: ' + s.chats + ' 次'
-        );
+
+        // API key 行（key 只显示前几位，复制时给完整值）
+        let apiKeyRow = '';
+        try {
+            if (window.Qidian && Qidian.getHttpInfo) {
+                const h = JSON.parse(Qidian.getHttpInfo());
+                if (h.listening && h.apiKey) {
+                    apiKeyRow = `<div class="qd-kv" data-copy="${h.apiKey}">`
+                        + `<span>API Key</span><b>${h.apiKey.substring(0, 8)}••••••••</b><em>复制</em></div>`
+                        + `<div class="qd-kv" data-copy="http://${h.lan}/v1"><span>Base URL</span><b>http://${h.lan}/v1</b><em>复制</em></div>`;
+                }
+            }
+        } catch (e) { }
+
+        qdModal(`
+            <h3 style="font-size:var(--fs-lg);margin-bottom:4px;">实时系统状态</h3>
+            <p class="qd-modal-sub">每 2 秒自动刷新 · 长按条目或点「复制」即可复制</p>
+            <div class="qd-kv" data-copy="AI 引擎: ${s.ai ? '运行中' : '未就绪'}"><span>AI 引擎</span><b>${s.ai ? '✓ 运行中' : '✗ 未就绪'}</b><em>复制</em></div>
+            <div class="qd-kv" data-copy="${s.http && s.lan ? 'http://' + s.lan : ''}"><span>局域网 API</span><b>${s.http ? '✓ 监听中 · ' + (s.lan || ('端口 ' + s.port)) : '✗ 未监听'}</b><em>复制</em></div>
+            <div class="qd-kv" data-copy="容器(rootfs): ${s.container ? '就绪' : '初始化中'}"><span>容器(rootfs)</span><b>${s.container ? '✓ 就绪' : '… 初始化中'}</b><em>复制</em></div>
+            <div class="qd-kv" data-copy="模型文件: ${s.modelExists ? '已下载 ' + s.modelMB + ' MB' : '未下载'}"><span>模型文件</span><b>${s.modelExists ? '✓ 已下载 ' + s.modelMB + ' MB' : '✗ 未下载'}</b><em>复制</em></div>
+            <div class="qd-kv" data-copy="服务运行时长: ${fmt(s.uptime)}"><span>服务运行时长</span><b>${fmt(s.uptime)}</b><em>复制</em></div>
+            <div class="qd-kv" data-copy="已服务对话: ${s.chats} 次"><span>已服务对话</span><b>${s.chats} 次</b><em>复制</em></div>
+            ${apiKeyRow}
+        `);
     });
 })();
 

@@ -89,14 +89,8 @@ class MainActivity : Activity() {
         // 复制默认界面（首次启动）
         copyDefaultUI()
 
-        // 读取保存的屏幕方向
-        val prefs = getSharedPreferences("settings", MODE_PRIVATE)
-        val savedOrientation = prefs.getString("orientation", "landscape")
-        if (savedOrientation == "portrait") {
-            requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
-        } else {
-            requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
-        }
+        // 读取并应用保存的屏幕方向（onCreate + onResume 双重钉死，防止被 ROM 重置）
+        applySavedOrientation()
 
         // 加载界面
         val uiDir = File(filesDir, "ui")
@@ -109,10 +103,60 @@ class MainActivity : Activity() {
         }
     }
 
+    /**
+     * 应用已保存的屏幕方向。唯一数据源是 SharedPreferences：
+     * onCreate 和 onResume 都调用它——部分 ROM 在任务切换、侧滑返回后会把
+     * Activity 的 requestedOrientation 重置，不钉回去就会出现
+     * "设置里显示竖屏、实际却是横屏"的分裂。
+     */
+    private fun applySavedOrientation() {
+        val prefs = getSharedPreferences("settings", MODE_PRIVATE)
+        requestedOrientation = if (prefs.getString("orientation", "landscape") == "portrait") {
+            android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+        } else {
+            android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        applySavedOrientation()
+    }
+
+    /**
+     * 方向被系统/ROM 改变时（锁屏旋转、分屏、侧滑返回触发的小窗等），
+     * 立即按用户设置重新钉死方向——解决"设置里是竖屏、实际却横屏"的分裂。
+     */
+    override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
+        super.onConfigurationChanged(newConfig)
+        Log.i(TAG, "系统方向变更 → ${newConfig.orientation}，重新应用用户设置")
+        applySavedOrientation()
+    }
+
     /** 设置 WebView */
     private fun setupWebView() {
         webView = WebView(this)
         setContentView(webView)
+
+        // 左缘手势排除区：把左边缘一段高度（上限 200dp）划给 App 自己的手势
+        // （竖屏下左缘右滑 = 呼出导航抽屉/返回列表）。不做这一步，vivo 等ROM的
+        // 系统返回手势会先吃掉整个左缘，界面的抽屉手势永远收不到。
+        if (android.os.Build.VERSION.SDK_INT >= 29) {
+            webView.setOnApplyWindowInsetsListener { v, insets ->
+                val gestureLeft = try {
+                    insets.systemGestureInsets.left
+                } catch (_: Throwable) {
+                    (24 * resources.displayMetrics.density).toInt()
+                }
+                val zoneH = (200 * resources.displayMetrics.density).toInt()
+                    .coerceAtMost(v.height)
+                val top = (v.height - zoneH) / 2
+                v.systemGestureExclusionRects = listOf(
+                    android.graphics.Rect(0, top, gestureLeft.coerceAtLeast(40), top + zoneH)
+                )
+                insets
+            }
+        }
 
         webView.settings.apply {
             javaScriptEnabled = true
@@ -144,7 +188,14 @@ class MainActivity : Activity() {
                 Log.w(TAG, "WebView 错误: ${error?.description} url=${request?.url}")
             }
         }
-        webView.webChromeClient = WebChromeClient()
+        // JS console → logcat（便于真机排查 UI 问题）
+        android.webkit.WebView.setWebContentsDebuggingEnabled(true)
+        webView.webChromeClient = object : WebChromeClient() {
+            override fun onConsoleMessage(m: android.webkit.ConsoleMessage?): Boolean {
+                Log.i(TAG, "JS[${m?.messageLevel()}] ${m?.message()} @${m?.sourceId()}:${m?.lineNumber()}")
+                return true
+            }
+        }
 
         // 暴露 JS 接口
         webView.addJavascriptInterface(QidianJSInterface(this), "Qidian")
@@ -531,6 +582,20 @@ class MainActivity : Activity() {
                     Log.e(TAG, "切换屏幕方向失败", e)
                 }
             }
+        }
+
+        /**
+         * 界面显示方向的唯一数据源：mode=设置的值，actual=系统当前真实方向。
+         * 两者可能短暂不一致（切换后 Activity 正在重建），一致后自动对齐。
+         */
+        @JavascriptInterface
+        fun getOrientation(): String {
+            val prefs = activity.getSharedPreferences("settings", MODE_PRIVATE)
+            val mode = prefs.getString("orientation", "landscape") ?: "landscape"
+            val actual = if (activity.resources.configuration.orientation ==
+                android.content.res.Configuration.ORIENTATION_PORTRAIT
+            ) "portrait" else "landscape"
+            return "{\"mode\":\"$mode\",\"actual\":\"$actual\"}"
         }
 
         @JavascriptInterface

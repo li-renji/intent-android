@@ -29,6 +29,7 @@
         android:icon="@mipmap/ic_launcher"
         android:label="起点OS mini"
         android:supportsRtl="true"
+        android:usesCleartextTraffic="true"
         android:theme="@android:style/Theme.Material.NoActionBar">
 
         <!-- 开机动画：全屏横屏播放 boot_animation.mp4，完成后跳转到 MainActivity -->
@@ -43,10 +44,13 @@
             </intent-filter>
         </activity>
 
-        <!-- 主 Activity：WebView 界面 + proot 容器，方向由代码控制 -->
+        <!-- 主 Activity：WebView 界面 + proot 容器，方向由代码控制。
+             configChanges：旋转时重建 Activity 会重载 WebView 并丢失界面状态，
+             改为自行处理，并在 onConfigurationChanged 里重新钉死用户设置的方向 -->
         <activity
             android:name=".MainActivity"
             android:exported="false"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|keyboard|uiMode"
             android:screenOrientation="unspecified"
             android:theme="@android:style/Theme.Material.NoActionBar.Fullscreen" />
 
