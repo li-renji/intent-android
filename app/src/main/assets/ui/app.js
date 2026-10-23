@@ -847,6 +847,7 @@ function renderSettingsList(container) {
         { name: 'AI 权限', icon: '🔐', desc: '网络、位置、麦克风等权限管理' },
         { name: 'AI 配置', icon: '🤖', desc: '模型参数、推理线程、温度' },
         { name: '界面编辑', icon: '✏️', desc: '直接编辑 HTML/CSS/JS 界面文件' },
+        { name: '电脑连接', icon: '💻', desc: '局域网无线浏览/修改电脑文件' },
         { name: '模型切换', icon: '🔄', desc: '本地模型 / 云端 API 切换' },
         { name: '关于', icon: 'ℹ️', desc: '起点OS mini 版本信息' }
     ];
@@ -1146,6 +1147,11 @@ function openSettingDetail(setting) {
                 openSettingDetail(setting);
             });
         }, 50);
+        return;
+    }
+
+    if (setting.name === '电脑连接') {
+        renderPCBridge();
         return;
     }
 
@@ -2000,6 +2006,260 @@ document.addEventListener('click', function (e) {
         if (el) qdCopyText(el.getAttribute('data-copy'));
     });
 })();
+
+// ========== 电脑文件桥：局域网无线读写电脑（PC 端运行 tools/pc_bridge/pc_bridge.js） ==========
+const PC = {
+    cfg: null,   // {ip, token} 持久化在 localStorage
+    path: '',    // 当前浏览目录（'' = 盘符列表）
+    host: ''     // 已连接的电脑名
+};
+
+function pcLoad() {
+    try { PC.cfg = JSON.parse(localStorage.getItem('pcBridge') || 'null'); } catch (e) { PC.cfg = null; }
+    return PC.cfg;
+}
+
+function pcSave(cfg) {
+    PC.cfg = cfg;
+    localStorage.setItem('pcBridge', JSON.stringify(cfg));
+}
+
+function pcApi(p, opts) {
+    opts = opts || {};
+    opts.headers = Object.assign({ 'Authorization': 'Bearer ' + PC.cfg.token }, opts.headers || {});
+    // 未写端口时默认补 8899；也允许用户直接填 IP:端口
+    const base = 'http://' + (PC.cfg.ip.indexOf(':') >= 0 ? PC.cfg.ip : PC.cfg.ip + ':8899');
+    return fetch(base + p, opts).then(r => r.json()).then(j => {
+        if (!j.ok) throw new Error(j.error || '请求失败');
+        return j;
+    });
+}
+
+function pcFmtSize(n) {
+    if (n < 1024) return n + ' B';
+    if (n < 1048576) return (n / 1024).toFixed(1) + ' KB';
+    if (n < 1073741824) return (n / 1048576).toFixed(1) + ' MB';
+    return (n / 1073741824).toFixed(2) + ' GB';
+}
+
+/** 电脑连接主页面：未配置 → 连接表单；已配置 → 文件浏览器 */
+function renderPCBridge() {
+    pcLoad();
+    if (!PC.cfg) renderPCConnectForm();
+    else renderPCBrowser();
+}
+
+/** 连接表单 */
+function renderPCConnectForm(prefill) {
+    const header = document.getElementById('content-header');
+    const body = document.getElementById('content-body');
+    const footer = document.getElementById('content-footer');
+    header.innerHTML = `<span>💻 连接电脑</span>`;
+    footer.style.display = 'none';
+    body.innerHTML = `
+        <div style="padding:20px 16px;">
+            <div style="text-align:center;margin-bottom:18px;">
+                <div class="detail-avatar">💻</div>
+                <p style="color:var(--text-secondary);font-size:var(--fs-sm);line-height:1.7;margin-top:8px;">
+                    电脑上先运行 <b>tools/pc_bridge/启动文件桥.bat</b><br>
+                    然后把窗口里显示的 IP 和连接码填到下面<br>（需与手机连同一个 WiFi）
+                </p>
+            </div>
+            <div style="padding:14px;background:var(--bg-secondary);border-radius:8px;">
+                <div style="font-size:var(--fs-sm);color:var(--text-secondary);margin-bottom:6px;">电脑 IP（默认端口 8899，也可写 IP:端口）</div>
+                <input id="pc-ip" type="text" placeholder="192.168.3.4" value="${prefill && prefill.ip || ''}"
+                    style="width:100%;padding:10px;border-radius:6px;border:1px solid var(--border);background:var(--bg-input);color:var(--text-primary);font-size:var(--fs);box-sizing:border-box;margin-bottom:12px;">
+                <div style="font-size:var(--fs-sm);color:var(--text-secondary);margin-bottom:6px;">连接码（pc_bridge 窗口里的那串）</div>
+                <input id="pc-token" type="text" placeholder="32 位连接码" value="${prefill && prefill.token || ''}"
+                    style="width:100%;padding:10px;border-radius:6px;border:1px solid var(--border);background:var(--bg-input);color:var(--text-primary);font-size:var(--fs);box-sizing:border-box;margin-bottom:14px;">
+                <button id="pc-connect" style="width:100%;padding:12px;border-radius:6px;border:none;background:var(--accent);color:#fff;cursor:pointer;font-size:var(--fs);font-weight:600;">🔗 连接</button>
+                <div id="pc-conn-status" style="margin-top:10px;padding:10px;border-radius:6px;background:var(--bg-hover);color:var(--text-secondary);font-size:var(--fs-sm);">等待输入…</div>
+            </div>
+        </div>
+    `;
+    setTimeout(() => {
+        document.getElementById('pc-connect')?.addEventListener('click', async () => {
+            const ip = document.getElementById('pc-ip').value.trim();
+            const token = document.getElementById('pc-token').value.trim();
+            const st = document.getElementById('pc-conn-status');
+            if (!ip || !token) { st.textContent = '⚠️ 请先填写 IP 和连接码'; return; }
+            st.textContent = '连接中…';
+            pcSave({ ip: ip, token: token });
+            try {
+                const info = await pcApi('/api/ping');
+                PC.host = info.host || '电脑';
+                st.innerHTML = `<span style="color:var(--success);">✓ 已连接 ${PC.host}</span>，正在打开文件…`;
+                renderPCBrowser();
+            } catch (e) {
+                st.innerHTML = `<span style="color:var(--error);">✗ 连接失败：</span>${e.message}<br>检查：电脑防火墙放行 8899 端口 / 两设备同一 WiFi / IP 和连接码无误`;
+            }
+        });
+    }, 50);
+}
+
+/** 文件浏览器 */
+function renderPCBrowser() {
+    const header = document.getElementById('content-header');
+    const body = document.getElementById('content-body');
+    const footer = document.getElementById('content-footer');
+
+    const crumbs = PC.path
+        ? PC.path.split('\\').filter(Boolean).join(' › ')
+        : '我的电脑（选择盘符）';
+
+    header.innerHTML = `<span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">💻 ${PC.host || '电脑'}</span>`;
+    footer.style.display = 'none';
+    body.innerHTML = `
+        <div style="display:flex;flex-direction:column;height:100%;">
+            <div style="padding:8px 12px;background:var(--bg-secondary);border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px;">
+                <button id="pc-up" title="上级" style="padding:4px 10px;border-radius:4px;border:none;background:var(--bg-hover);color:var(--text-primary);cursor:pointer;font-size:var(--fs-sm);flex-shrink:0;">⬆</button>
+                <span id="pc-crumbs" style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:var(--fs-sm);color:var(--text-secondary);">${crumbs}</span>
+                <button id="pc-refresh" style="padding:4px 10px;border-radius:4px;border:none;background:var(--bg-hover);color:var(--text-primary);cursor:pointer;font-size:var(--fs-sm);flex-shrink:0;">🔄</button>
+                <button id="pc-mkdir" style="padding:4px 10px;border-radius:4px;border:none;background:var(--bg-hover);color:var(--text-primary);cursor:pointer;font-size:var(--fs-sm);flex-shrink:0;">📁+</button>
+                <button id="pc-disconnect" style="padding:4px 10px;border-radius:4px;border:none;background:var(--bg-hover);color:var(--error);cursor:pointer;font-size:var(--fs-sm);flex-shrink:0;">断开</button>
+            </div>
+            <div id="pc-list" style="flex:1;overflow-y:auto;padding:4px 0;">
+                <div class="list-empty" style="padding:30px;text-align:center;color:var(--text-secondary);">加载中…</div>
+            </div>
+            <div id="pc-mkdir-row" style="display:none;padding:8px 12px;background:var(--bg-secondary);border-top:1px solid var(--border);gap:8px;">
+                <input id="pc-mkdir-name" type="text" placeholder="新文件夹名称"
+                    style="flex:1;padding:8px;border-radius:6px;border:1px solid var(--border);background:var(--bg-input);color:var(--text-primary);font-size:var(--fs-sm);">
+                <button id="pc-mkdir-ok" style="padding:8px 14px;border-radius:6px;border:none;background:var(--accent);color:#fff;cursor:pointer;font-size:var(--fs-sm);">创建</button>
+                <button id="pc-mkdir-cancel" style="padding:8px 14px;border-radius:6px;border:none;background:var(--bg-hover);color:var(--text-primary);cursor:pointer;font-size:var(--fs-sm);">取消</button>
+            </div>
+        </div>
+    `;
+
+    const loadList = () => {
+        const list = document.getElementById('pc-list');
+        pcApi('/api/list?path=' + encodeURIComponent(PC.path)).then(j => {
+            if (!j.items.length) { list.innerHTML = '<div class="list-empty" style="padding:30px;text-align:center;color:var(--text-secondary);">空目录</div>'; return; }
+            list.innerHTML = '';
+            j.items.forEach(it => {
+                const row = document.createElement('div');
+                row.className = 'list-item';
+                row.innerHTML = `
+                    <div class="list-item-avatar">${it.type === 'dir' ? '📁' : '📄'}</div>
+                    <div class="list-item-info">
+                        <div class="list-item-name">${it.name}</div>
+                    </div>
+                    <div class="list-item-time">${it.type === 'file' ? pcFmtSize(it.size) : ''}</div>
+                `;
+                row.addEventListener('click', () => {
+                    const full = PC.path ? PC.path.replace(/\\+$/, '') + '\\' + it.name : it.name;
+                    if (it.type === 'dir') {
+                        PC.path = full;
+                        renderPCBrowser();
+                    } else {
+                        openPCFile(full);
+                    }
+                });
+                list.appendChild(row);
+            });
+        }).catch(e => {
+            list.innerHTML = `<div style="padding:30px;text-align:center;color:var(--error);font-size:var(--fs-sm);">
+                ⚠️ ${e.message}<br><br>
+                <button id="pc-reconnect" style="padding:8px 16px;border-radius:6px;border:none;background:var(--accent);color:#fff;cursor:pointer;">重新连接</button></div>`;
+            document.getElementById('pc-reconnect')?.addEventListener('click', () => {
+                pcSave(null); localStorage.removeItem('pcBridge'); PC.cfg = null;
+                renderPCConnectForm();
+            });
+        });
+    };
+
+    setTimeout(() => {
+        loadList();
+        document.getElementById('pc-refresh')?.addEventListener('click', loadList);
+        document.getElementById('pc-up')?.addEventListener('click', () => {
+            if (!PC.path) return;
+            // D:\INTENT\tools → D:\INTENT → D:\ → ''（盘符列表）
+            const parts = PC.path.split('\\').filter(Boolean);
+            parts.pop();
+            PC.path = parts.length ? parts.join('\\') + (parts.length === 1 && parts[0].endsWith(':') ? '\\' : '') : '';
+            if (PC.path.length === 2) PC.path += '\\';
+            renderPCBrowser();
+        });
+        document.getElementById('pc-disconnect')?.addEventListener('click', () => {
+            localStorage.removeItem('pcBridge'); PC.cfg = null; PC.path = '';
+            renderPCConnectForm();
+        });
+        document.getElementById('pc-mkdir')?.addEventListener('click', () => {
+            const row = document.getElementById('pc-mkdir-row');
+            row.style.display = row.style.display === 'none' ? 'flex' : 'none';
+        });
+        document.getElementById('pc-mkdir-cancel')?.addEventListener('click', () => {
+            document.getElementById('pc-mkdir-row').style.display = 'none';
+        });
+        document.getElementById('pc-mkdir-ok')?.addEventListener('click', async () => {
+            const name = document.getElementById('pc-mkdir-name').value.trim();
+            if (!name || !PC.path) { qdToast('请先进入某个盘符目录'); return; }
+            try {
+                await pcApi('/api/mkdir', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path: PC.path.replace(/\\+$/, '') + '\\' + name }) });
+                qdToast('已创建');
+                renderPCBrowser();
+            } catch (e) { qdToast('创建失败: ' + e.message); }
+        });
+    }, 50);
+}
+
+/** 打开电脑上的文件进行编辑（保存在电脑上） */
+function openPCFile(fullPath) {
+    const header = document.getElementById('content-header');
+    const body = document.getElementById('content-body');
+    const footer = document.getElementById('content-footer');
+
+    pushPage({ type: 'setting_detail', data: { name: '电脑连接', icon: '💻' } });
+
+    header.innerHTML = `<span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">📄 ${fullPath.split('\\').pop()}</span>`;
+    body.innerHTML = `<div style="padding:30px;text-align:center;color:var(--text-secondary);">读取中…</div>`;
+    footer.style.display = 'none';
+
+    pcApi('/api/read?path=' + encodeURIComponent(fullPath)).then(j => {
+        const isText = j.text;
+        body.innerHTML = `
+            <div style="height:100%;display:flex;flex-direction:column;">
+                <div style="padding:4px 8px;background:var(--bg-secondary);border-bottom:1px solid var(--border);font-size:var(--fs-sm);color:var(--text-secondary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
+                    ${fullPath} · ${pcFmtSize(j.size)}
+                </div>
+                ${isText ? `
+                <textarea id="pc-editor" spellcheck="false" style="flex:1;width:100%;padding:12px;border:none;background:var(--bg-input);color:#d4d4d4;font-family:'Consolas','Monaco',monospace;font-size:12px;resize:none;outline:none;line-height:1.5;tab-size:4;box-sizing:border-box;"></textarea>
+                <div style="padding:6px 8px;background:var(--bg-secondary);font-size:var(--fs-sm);color:var(--text-secondary);display:flex;justify-content:space-between;">
+                    <span id="pc-ed-status">就绪 · 改完点下方保存</span><span>UTF-8</span>
+                </div>` : `
+                <div style="flex:1;padding:30px;text-align:center;color:var(--text-secondary);">
+                    🖼️ 二进制文件（${pcFmtSize(j.size)}）<br><br>
+                    <button id="pc-download" style="padding:10px 20px;border-radius:6px;border:none;background:var(--accent);color:#fff;cursor:pointer;">⬇ 下载到手机</button>
+                </div>`}
+            </div>
+        `;
+        footer.style.display = isText ? 'flex' : 'none';
+        if (isText) {
+            footer.innerHTML = `
+                <button id="pc-save" style="flex:1;padding:10px;border-radius:6px;border:none;background:var(--success);color:#fff;cursor:pointer;font-size:var(--fs);">💾 保存到电脑</button>
+                <button id="pc-close" style="flex:1;padding:10px;border-radius:6px;border:none;background:var(--bg-hover);color:var(--text-primary);cursor:pointer;font-size:var(--fs);">✕ 关闭</button>`;
+            const ta = document.getElementById('pc-editor');
+            ta.value = j.content;
+            setTimeout(() => {
+                document.getElementById('pc-save')?.addEventListener('click', async () => {
+                    const st = document.getElementById('pc-ed-status');
+                    st.textContent = '保存中…';
+                    try {
+                        await pcApi('/api/write', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path: fullPath, content: ta.value }) });
+                        st.innerHTML = `<span style="color:var(--success);">✓ 已保存到电脑 ${new Date().toLocaleTimeString('zh-CN')}</span>`;
+                        qdToast('已保存到电脑');
+                    } catch (e) { st.innerHTML = `<span style="color:var(--error);">✗ 保存失败：${e.message}</span>`; }
+                });
+                document.getElementById('pc-close')?.addEventListener('click', goBack);
+            }, 50);
+        } else {
+            document.getElementById('pc-download')?.addEventListener('click', () => {
+                window.open(pcBase() + '/api/download?path=' + encodeURIComponent(fullPath) + '&token=' + PC.cfg.token);
+            });
+        }
+    }).catch(e => {
+        body.innerHTML = `<div style="padding:30px;text-align:center;color:var(--error);">读取失败：${e.message}</div>`;
+    });
+}
 
 // 全局状态灯：颜色实时反映引擎状态；点按显示完整快照
 (function () {
