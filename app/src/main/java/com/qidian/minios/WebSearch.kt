@@ -2,6 +2,7 @@ package com.qidian.minios
 
 import android.content.Context
 import android.util.Log
+import kotlin.text.RegexOption
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.os.Build
@@ -58,7 +59,7 @@ object WebSearch {
         sb.append("联网搜索「$q」的结果：\n")
         val providers = listOf(
             { trySearch("Bing", searchBing(enc, maxResults)) },
-            { trySearch("DuckDuckGo", searchDuckDuckGo(enc, maxResults)) }
+            { trySearch("Baidu", searchBaidu(enc, maxResults)) }
         )
         for (p in providers) {
             val results = p()
@@ -129,18 +130,26 @@ object WebSearch {
     }
 
     private fun searchBing(enc: String, max: Int): List<Result> {
-        val html = getHtml("https://www.bing.com/search?q=$enc&setlang=zh-CN") ?: return emptyList()
+        // 用 cn.bing.com 直连：www.bing.com 在国内会 302 跳转到 cn，
+        // 而 HttpURLConnection 在部分 Android 版本上对跨主机重定向跟随不可靠。
+        val html = getHtml("https://cn.bing.com/search?q=$enc&setlang=zh-CN&mkt=zh-CN")
+            ?: return emptyList()
         val out = ArrayList<Result>()
-        val blocks = Regex("""<li class="b_algo">[\s\S]*?</li>""").findAll(html)
+        val blocks = Regex("""<li class="b_algo"[^>]*>[\s\S]*?</li>""").findAll(html)
         for (b in blocks) {
             val block = b.value
-            val href = Regex("""<h2><a href="([^"]+)"""").find(block)?.groupValues?.get(1) ?: continue
+            // 结果块内首个外链 http(s) 即为目标网址（CSS 用相对路径 /rp/，不会被误取）
+            val href = Regex("""href="(https?://[^"]+)"""").find(block)?.groupValues?.get(1) ?: continue
             if (!href.startsWith("http")) continue
             val title = stripTags(
-                Regex("""<h2><a[^>]*>([\s\S]*?)</a>""").find(block)?.groupValues?.get(1) ?: ""
-            ).take(80)
+                Regex("""<a[^>]*class="tilk"[^>]*>(.*?)</a>""", RegexOption.DOT_MATCHES_ALL)
+                    .find(block)?.groupValues?.get(1) ?: ""
+            ).ifBlank {
+                Regex("""aria-label="([^"]+)"""").find(block)?.groupValues?.get(1) ?: ""
+            }
             val snippet = stripTags(
-                Regex("""<p[^>]*>([\s\S]*?)</p>""").find(block)?.groupValues?.get(1) ?: ""
+                Regex("""<p[^>]*>([\s\S]*?)</p>""", RegexOption.DOT_MATCHES_ALL)
+                    .find(block)?.groupValues?.get(1) ?: ""
             ).take(160)
             if (title.isNotBlank()) out.add(Result(title, href, snippet))
             if (out.size >= max) break
@@ -148,34 +157,21 @@ object WebSearch {
         return out
     }
 
-    private fun searchDuckDuckGo(enc: String, max: Int): List<Result> {
-        val html = getHtml("https://html.duckduckgo.com/html/?q=$enc") ?: return emptyList()
+    private fun searchBaidu(enc: String, max: Int): List<Result> {
+        val html = getHtml("https://www.baidu.com/s?wd=$enc") ?: return emptyList()
         val out = ArrayList<Result>()
-        val links = Regex("""<a[^>]*class="result__a"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)</a>""")
+        val titles = Regex("""<h3 class="t">\s*<a[^>]*href="([^"]+)"[^>]*>(.*?)</a>""", RegexOption.DOT_MATCHES_ALL)
             .findAll(html).toList()
-        val snips = Regex("""<a[^>]*class="result__snippet"[^>]*>([\s\S]*?)</a>""")
+        val snips = Regex("""<span class="content-right_[^"]*">([\s\S]*?)</span>""", RegexOption.DOT_MATCHES_ALL)
             .findAll(html).toList()
-        for (i in links.indices) {
-            val href = decodeDdg(links[i].groupValues[1])
-            val title = stripTags(links[i].groupValues[2]).take(80)
+        for (i in titles.indices) {
+            val href = titles[i].groupValues[1]
+            val title = stripTags(titles[i].groupValues[2]).take(80)
             val snippet = if (i < snips.size) stripTags(snips[i].groupValues[1]).take(160) else ""
-            if (href.startsWith("http") && title.isNotBlank()) out.add(Result(title, href, snippet))
+            if (title.isNotBlank() && href.startsWith("http")) out.add(Result(title, href, snippet))
             if (out.size >= max) break
         }
         return out
-    }
-
-    private fun decodeDdg(href: String): String {
-        val m = Regex("""uddg=([^&]+)""").find(href)
-        return if (m != null) {
-            try {
-                java.net.URLDecoder.decode(m.groupValues[1], "UTF-8")
-            } catch (_: Throwable) {
-                href
-            }
-        } else {
-            href
-        }
     }
 
     private fun extractText(html: String): String {
