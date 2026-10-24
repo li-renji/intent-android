@@ -38,14 +38,28 @@ class LocalHttpServer(
     private val statusPort: Int = 8822,
     private val aiProvider: () -> AiService?,
     /** App filesDir：API key 持久化目录（首次启动自动生成，之后固定不变）。 */
-    keyDir: File? = null
+    keyDir: File? = null,
+    /**
+     * Application 上下文。
+     * 模型商店相关端点不能依赖 Activity —— 手机锁屏时 Activity 会被销毁，
+     * 若走 Activity.instance 拿 catalog，锁屏期间这些端点会全部 503。
+     */
+    appContext: android.content.Context? = null
 ) {
     private val keyDir: File? = keyDir
+
+    /** Application 上下文（供模型商店使用，不随 Activity 销毁失效） */
+    private val appContext: android.content.Context? = appContext
+
+    /** 模型商店（进程级，不随 Activity 生命周期变化） */
+    private val catalog: ModelCatalog?
+        get() = appContext?.let { MainActivity.modelCatalogOf(it) }
+            ?: MainActivity.instance?.modelCatalog()
 
     /** 当前激活的模型名（可在运行时切换，故为动态 getter） */
     private val modelName: String
         get() = try {
-            val c = MainActivity.instance?.modelCatalog()
+            val c = catalog
             val id = c?.activeModelId() ?: "qwen2.5-1.5b-mnn"
             c?.find(id)?.name ?: id
         } catch (_: Throwable) {
@@ -710,7 +724,7 @@ class LocalHttpServer(
 
     /** 模型商店列表（供外部脚本/监控查询已下载模型与当前激活） */
     private fun modelCatalogJson(): String = try {
-        MainActivity.instance?.modelCatalog()?.snapshotJson() ?: """{"ok":false,"error":"activity unavailable"}"""
+        catalog?.snapshotJson() ?: """{"ok":false,"error":"catalog unavailable"}"""
     } catch (t: Throwable) {
         """{"ok":false,"error":"${t.message?.replace("\"", "") ?: "unknown"}"}"""
     }
@@ -722,18 +736,23 @@ class LocalHttpServer(
             writeJson(out, 400, """{"ok":false,"error":"缺少 model_id"}""")
             return
         }
-        val act = MainActivity.instance
-        if (act == null) {
-            writeJson(out, 503, """{"ok":false,"error":"activity unavailable"}""")
+        val cat = catalog
+        if (cat == null) {
+            writeJson(out, 503, """{"ok":false,"error":"catalog unavailable"}""")
             return
         }
-        val catalog = act.modelCatalog()
-        if (catalog.find(id) == null) {
+        if (cat.find(id) == null) {
             writeJson(out, 404, """{"ok":false,"error":"模型不存在: $id"}""")
             return
         }
-        if (catalog.isDownloaded(id)) {
+        if (cat.isDownloaded(id)) {
             writeJson(out, 200, """{"ok":true,"started":false,"reason":"already_downloaded"}""")
+            return
+        }
+        val act = MainActivity.instance
+        if (act == null) {
+            // Activity 不在（锁屏/被杀）→ 由 App 重启后的首启流程接手下载
+            writeJson(out, 503, """{"ok":false,"error":"activity unavailable, 将在下次启动时自动下载"}""")
             return
         }
         Thread {
@@ -749,9 +768,10 @@ class LocalHttpServer(
             writeJson(out, 400, """{"ok":false,"error":"缺少 model_id"}""")
             return
         }
+        // 切换需要重建 MNN 引擎，必须有 Activity 上下文
         val act = MainActivity.instance
         if (act == null) {
-            writeJson(out, 503, """{"ok":false,"error":"activity unavailable"}""")
+            writeJson(out, 503, """{"ok":false,"error":"activity unavailable（切模型需要 App 在前台）"}""")
             return
         }
         val ok = act.activateModel(id)
@@ -766,12 +786,12 @@ class LocalHttpServer(
             writeJson(out, 400, """{"ok":false,"error":"缺少 model_id"}""")
             return
         }
-        val act = MainActivity.instance
-        if (act == null) {
-            writeJson(out, 503, """{"ok":false,"error":"activity unavailable"}""")
+        val cat = catalog
+        if (cat == null) {
+            writeJson(out, 503, """{"ok":false,"error":"catalog unavailable"}""")
             return
         }
-        val ok = act.modelCatalog().deleteModel(id)
+        val ok = cat.deleteModel(id)
         if (ok) writeJson(out, 200, """{"ok":true,"deleted":"$id"}""")
         else writeJson(out, 400, """{"ok":false,"error":"删除失败（当前使用的模型不能删除）"}""")
     }

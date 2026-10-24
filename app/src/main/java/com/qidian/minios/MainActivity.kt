@@ -59,10 +59,20 @@ class MainActivity : Activity() {
         @Volatile var modelDownloadFile: String = ""
         @Volatile var modelDownloadStartedAt: Long = 0
         @Volatile var modelDownloadModelId: String = ""
-        @Volatile private var catalogInstance: ModelCatalog? = null
-
         // 当前 Activity 引用：HTTP 服务需要它来查模型商店（换模型要重建引擎）
         @Volatile var instance: MainActivity? = null
+
+        /**
+         * 模型商店实例（进程级）。
+         *
+         * 用 applicationContext 构造，不依赖 Activity 生命周期 ——
+         * 手机锁屏时 Activity 会被销毁重建，若把 catalog 挂在 Activity 上，
+         * 锁屏期间 HTTP 的 /model/list 等端点会全部 503。
+         */
+        @Volatile private var catalogInstance: ModelCatalog? = null
+
+        fun modelCatalogOf(context: android.content.Context): ModelCatalog =
+            catalogInstance ?: ModelCatalog(context.applicationContext).also { catalogInstance = it }
 
         // 投屏授权全局变量
         @Volatile
@@ -328,7 +338,8 @@ class MainActivity : Activity() {
                     httpPort = 9999,
                     statusPort = 8822,
                     aiProvider = { aiService },
-                    keyDir = filesDir
+                    keyDir = filesDir,
+                    appContext = applicationContext
                 )
                 val ok = srv.start()
                 localHttp = srv
@@ -430,9 +441,8 @@ class MainActivity : Activity() {
         }
     }
 
-    /** 模型商店实例（进程内单例） */
-    internal fun modelCatalog(): ModelCatalog =
-        catalogInstance ?: ModelCatalog(this).also { catalogInstance = it }
+    /** 模型商店实例（进程级，不随 Activity 销毁而失效） */
+    internal fun modelCatalog(): ModelCatalog = modelCatalogOf(this)
 
     /**
      * 切换当前使用的本地模型：重启 AI 引擎加载新模型。
