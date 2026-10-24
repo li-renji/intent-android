@@ -10,7 +10,13 @@
 # 作用:
 #   1) 无线连接设备
 #   2) 安装 APK（debug 包直接覆盖；release 包需签名一致）
-#   3) 可选：推送本地模型目录，跳过 792MB 下载
+#   3) 可选：推送本地模型目录，跳过下载
+#
+# 模型目录说明:
+#   推送到 files/models/<modelId>/，modelId 必须与
+#   app/src/main/assets/model_catalog.json 里的 id 一致，
+#   否则 App 认不出这个模型（模型商店里不会显示为已下载）。
+#   可以推多个：重复执行本脚本并传不同的目录名即可。
 
 set -euo pipefail
 

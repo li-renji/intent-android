@@ -128,7 +128,7 @@ function setupHeaderButtons() {
                                 rows = `
                                     <div class="qd-kv" data-copy="${baseUrl}"><span>Base URL</span><b>${baseUrl}</b><em>复制</em></div>
                                     <div class="qd-kv" data-copy="${key}"><span>API Key</span><b>${key}</b><em>复制</em></div>
-                                    <div class="qd-kv" data-copy="qwen2.5-1.5b-mnn"><span>模型名</span><b>qwen2.5-1.5b-mnn</b><em>复制</em></div>
+                                    <div class="qd-kv" data-copy="qwen2.5-1.5b-mnn"><span>模型名</span><b id="qd-about-model-id">qwen2.5-1.5b-mnn</b><em>复制</em></div>
                                     <p style="color:var(--text-secondary);font-size:var(--fs-sm);line-height:1.6;margin-top:10px;">
                                         在 Agent / 客户端里按 OpenAI 兼容格式填上面三项。
                                         点「复制」或<b>长按条目</b>即可复制。
@@ -403,6 +403,178 @@ function renderMessageList(container) {
     // 更新未读徽章
     updateMsgBadge();
 }
+
+/**
+ * 当前本地模型的展示信息（随模型商店切换而变化）
+ */
+function currentLocalModel() {
+    let info = { modelId: '', modelName: 'Qwen2.5-1.5B', exists: false, sizeMB: 0 };
+    try {
+        if (window.Qidian && Qidian.checkModelExists) {
+            info = Object.assign(info, JSON.parse(Qidian.checkModelExists()));
+        }
+    } catch (e) { }
+    return info;
+}
+
+/**
+ * 模型商店
+ * ---------------------------------------------------------------------------
+ * 后端：ModelCatalog.kt（解析 assets/model_catalog.json）
+ *       下载：ModelProvisioner（多镜像 / 断点续传 / sha256）
+ * 接口：getModelCatalog / downloadModel / activateModel / deleteModel
+ */
+const ModelStore = {
+    catalog: null,       // {active, default, models:[...]}
+    downloadingId: null,
+
+    bind() {
+        window.onModelCatalogChanged = () => { this.load(); this.render(); };
+        window.onModelProgress = (p) => {
+            ModelDownload.state = p.state || 'idle';
+            ModelDownload.downloaded = p.downloaded || 0;
+            ModelDownload.total = p.total || 0;
+            ModelDownload.speed = p.speed || 0;
+            ModelDownload.file = p.file || '';
+            ModelDownload.error = p.error || null;
+            ModelDownload.modelId = p.model_id || '';
+            ModelDownload.render();
+            // 下载完成后刷新商店列表
+            if (p.state === 'done') {
+                this.downloadingId = null;
+                this.load();
+                this.render();
+            } else if (p.state === 'failed') {
+                this.downloadingId = null;
+                this.render();
+            }
+        };
+    },
+
+    load() {
+        try {
+            if (window.Qidian && Qidian.getModelCatalog) {
+                this.catalog = JSON.parse(Qidian.getModelCatalog());
+            }
+        } catch (e) { }
+        return this.catalog;
+    },
+
+    fmtMB(mb) {
+        if (!mb) return '0 MB';
+        if (mb >= 1024) return (mb / 1024).toFixed(1) + ' GB';
+        return mb + ' MB';
+    },
+
+    ramMB() {
+        // 粗略估计设备内存（浏览器拿不到精确值，用 deviceMemory 或默认值）
+        const dm = navigator.deviceMemory || 4;
+        return dm * 1024;
+    },
+
+    download(modelId) {
+        if (!window.Qidian || !Qidian.downloadModel) {
+            alert('当前环境不支持模型下载');
+            return;
+        }
+        this.bind();
+        const r = JSON.parse(Qidian.downloadModel(modelId) || '{}');
+        if (r.started) {
+            this.downloadingId = modelId;
+            this.render();
+        } else if (r.error && r.error !== '已下载') {
+            alert(r.error);
+        }
+    },
+
+    activate(modelId) {
+        try {
+            const r = JSON.parse(Qidian.activateModel(modelId) || '{}');
+            if (r.ok) {
+                this.load();
+                this.render();
+                alert('已切换模型，正在重新加载引擎…');
+            } else {
+                alert('切换失败：' + (r.error || '未知错误'));
+            }
+        } catch (e) {
+            alert('切换失败：' + e.message);
+        }
+    },
+
+    remove(modelId) {
+        if (!confirm('删除该模型？可释放磁盘空间，之后可重新下载。')) return;
+        try {
+            const r = JSON.parse(Qidian.deleteModel(modelId) || '{}');
+            if (r.ok) {
+                this.load();
+                this.render();
+            } else {
+                alert(r.error || '删除失败');
+            }
+        } catch (e) {
+            alert('删除失败：' + e.message);
+        }
+    },
+
+    render() {
+        const host = document.getElementById('model-store-list');
+        if (!host || !this.catalog) return;
+        const models = this.catalog.models || [];
+        const myRam = this.ramMB();
+
+        host.innerHTML = models.map(m => {
+            const isActive = m.active;
+            const isDown = m.downloaded;
+            const isDownloading = this.downloadingId === m.id;
+            const ramOk = myRam >= (m.min_ram_mb || 1024);
+
+            const tags = (m.tags || []).map(t =>
+                `<span style="display:inline-block;padding:1px 6px;border-radius:4px;font-size:11px;margin-right:4px;background:var(--bg-secondary);color:var(--text-secondary);">${t}</span>`
+            ).join('');
+
+            let action = '';
+            if (isDownloading) {
+                action = `<span style="color:var(--accent);font-size:var(--fs-sm);">下载中…</span>`;
+            } else if (isActive) {
+                action = `<span style="color:var(--success);font-size:var(--fs-sm);">● 使用中</span>`;
+            } else if (isDown) {
+                action = `<button data-act="activate" data-id="${m.id}" style="padding:6px 12px;border-radius:6px;border:1px solid var(--accent);background:transparent;color:var(--accent);cursor:pointer;font-size:var(--fs-sm);">切换</button>
+                          <button data-act="delete" data-id="${m.id}" style="padding:6px 10px;border-radius:6px;border:1px solid var(--border);background:transparent;color:var(--text-secondary);cursor:pointer;font-size:var(--fs-sm);margin-left:6px;">删除</button>`;
+            } else {
+                const memWarn = ramOk ? '' : `<span style="color:var(--warning);font-size:var(--fs-sm);">内存可能不足</span>`;
+                action = `<button data-act="download" data-id="${m.id}" style="padding:6px 12px;border-radius:6px;border:none;background:var(--accent);color:white;cursor:pointer;font-size:var(--fs-sm);">下载</button>${memWarn}`;
+            }
+
+            return `
+            <div class="perm-item" style="flex-direction:column;align-items:stretch;gap:6px;padding:12px 0;border-bottom:1px solid var(--border);">
+                <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
+                    <div style="flex:1;min-width:0;">
+                        <div class="perm-name">${m.name} ${tags}</div>
+                        <div class="perm-desc" style="margin-top:3px;">${m.desc || ''}</div>
+                        <div style="color:var(--text-secondary);font-size:var(--fs-sm);margin-top:3px;">
+                            ${m.params} · ${this.fmtMB(m.size_mb)}
+                            ${m.min_ram_mb ? ' · 建议内存 ' + m.min_ram_mb + 'MB+' : ''}
+                            ${isDown && !isActive ? ' · 已占用 ' + this.fmtMB(m.local_mb) : ''}
+                        </div>
+                    </div>
+                    <div style="text-align:right;white-space:nowrap;">${action}</div>
+                </div>
+            </div>`;
+        }).join('');
+
+        // 事件绑定
+        host.querySelectorAll('button[data-act]').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const act = btn.dataset.act;
+                const id = btn.dataset.id;
+                if (act === 'download') ModelStore.download(id);
+                else if (act === 'activate') ModelStore.activate(id);
+                else if (act === 'delete') ModelStore.remove(id);
+            });
+        });
+    }
+};
 
 /**
  * 模型下载控制器
@@ -954,6 +1126,7 @@ function renderSettingsList(container) {
         { name: '界面编辑', icon: '✏️', desc: '直接编辑 HTML/CSS/JS 界面文件' },
         { name: '电脑连接', icon: '💻', desc: '局域网无线浏览/修改电脑文件' },
         { name: '模型切换', icon: '🔄', desc: '本地模型 / 云端 API 切换' },
+        { name: '模型商店', icon: '🛒', desc: '下载并切换本地模型（12 款可选）' },
         { name: '关于', icon: 'ℹ️', desc: '起点OS mini 版本信息' }
     ];
 
@@ -1299,7 +1472,7 @@ function openSettingDetail(setting) {
                     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
                         <div>
                             <div style="color:var(--text-secondary);font-size:var(--fs-sm);margin-bottom:4px;">本地模型</div>
-                            <div style="font-size:var(--fs);">Qwen2.5-1.5B-Instruct · MNN 4-bit</div>
+                            <div style="font-size:var(--fs);" id="qd-mon-model-name">Qwen2.5-1.5B-Instruct · MNN 4-bit</div>
                             <div style="color:var(--text-secondary);font-size:var(--fs-sm);margin-top:2px;">
                                 文件：<span id="qd-mon-model-file">…</span>
                                 &nbsp;|&nbsp; 引擎：<span id="qd-mon-model-engine">…</span>
@@ -1364,6 +1537,7 @@ function openSettingDetail(setting) {
 
             // 模型：文件下载 与 引擎加载 是两回事，分开显示
             const fileOk = snap.modelExists === true;
+            set('qd-mon-model-name', (snap.modelName || 'Qwen2.5-1.5B') + ' · MNN 4-bit');
             set('qd-mon-model',
                 `<span style="color:${snap.modelExists === false ? 'var(--error)' : 'var(--text-secondary)'};">${snap.modelExists === false ? '未下载' : (fileOk ? snap.modelMB + ' MB' : '检查中')}</span>`);
             setCopy('qd-mon-model', '模型文件: ' + (snap.modelExists === false ? '未下载' : (fileOk ? '已下载 ' + snap.modelMB + ' MB' : '检查中')));
@@ -1376,7 +1550,7 @@ function openSettingDetail(setting) {
                     ? '<span style="color:var(--success);">已加载，可对话</span>'
                     : (fileOk ? '<span style="color:var(--warning);">加载中（约 2~3 秒）</span>' : '<span style="color:var(--error);">无模型可加载</span>'));
             setCopy('qd-mon-model-block',
-                '本地模型: Qwen2.5-1.5B-Instruct · MNN 4-bit · 文件'
+                '本地模型: ' + (snap.modelName || 'Qwen2.5-1.5B-Instruct') + ' · MNN 4-bit · 文件'
                 + (fileOk ? '已下载（' + snap.modelMB + ' MB）' : (snap.modelExists === false ? '未下载' : '检查中'))
                 + ' · 引擎' + (aiOk ? '已加载，可对话' : (fileOk ? '加载中' : '无模型可加载')));
 
@@ -1391,7 +1565,7 @@ function openSettingDetail(setting) {
                             ModelDownload.start();
                         });
                     }, 50);
-                    set('qd-mon-model-hint', '首次使用需下载本地模型（Qwen2.5-1.5B · MNN，约 868MB）。<br>点击上方按钮即可自动下载，支持断点续传与多镜像加速；下载完成后模型会在手机本地运行，不上传任何数据。');
+                    set('qd-mon-model-hint', '首次使用需下载本地模型（Qwen2.5-1.5B · MNN，约 839MB）。<br>点击上方按钮即可自动下载，支持断点续传与多镜像加速；下载完成后模型会在手机本地运行，不上传任何数据。');
                 } else {
                     slot.innerHTML = fileOk ? '<span style="color:var(--success);font-size:var(--fs-sm);">✓ 文件就绪</span>' : '';
                     set('qd-mon-model-hint', '');
@@ -1566,6 +1740,58 @@ function openSettingDetail(setting) {
                 }
             });
         }, 100);
+    } else if (setting.name === '模型商店') {
+        body.innerHTML = `
+            <div style="padding:16px;">
+                <h3 style="margin-bottom:6px;font-size:var(--fs-md);">模型商店</h3>
+                <p style="color:var(--text-secondary);font-size:var(--fs-sm);line-height:1.6;margin-bottom:14px;">
+                    模型在手机本地运行，不上传任何数据。可同时下载多款，按需切换使用。
+                    当前使用中的模型会标记为「使用中」。
+                </p>
+                <div id="model-store-list"></div>
+                <div id="model-store-progress" style="margin-top:14px;"></div>
+            </div>
+        `;
+        setTimeout(() => {
+            ModelStore.bind();
+            ModelStore.load();
+            ModelStore.render();
+            // 把下载进度挂到商店页
+            const holder = document.getElementById('model-store-progress');
+            const origRender = ModelDownload.render.bind(ModelDownload);
+            ModelDownload.render = function () {
+                origRender();
+                if (!holder) return;
+                if (ModelDownload.state === 'downloading') {
+                    const pct = ModelDownload.total > 0
+                        ? Math.floor(ModelDownload.downloaded * 100 / ModelDownload.total) : 0;
+                    const eta = (ModelDownload.speed > 0 && ModelDownload.total > 0)
+                        ? Math.max(0, Math.round((ModelDownload.total - ModelDownload.downloaded) / ModelDownload.speed)) : -1;
+                    holder.innerHTML =
+                        `<div style="padding:12px;border-radius:8px;background:var(--bg-secondary);">
+                           <div style="font-size:var(--fs-sm);color:var(--text-secondary);margin-bottom:6px;">
+                             正在下载 ${ModelDownload.modelId || ''} · ${pct}%
+                             ${eta >= 0 ? ' · 剩余 ' + (eta >= 60 ? Math.ceil(eta / 60) + ' 分钟' : eta + ' 秒') : ''}
+                           </div>
+                           <div style="height:6px;border-radius:3px;background:var(--bg-input);overflow:hidden;">
+                             <div style="height:100%;width:${pct}%;background:var(--accent);transition:width .4s;"></div>
+                           </div>
+                           <div style="font-size:var(--fs-sm);color:var(--text-secondary);margin-top:5px;">
+                             ${ModelStore.fmtMB(ModelDownload.downloaded / 1048576)} / ${ModelStore.fmtMB(ModelDownload.total / 1048576)}
+                             · ${ModelStore.fmtMB(ModelDownload.speed / 1048576)}/s
+                           </div>
+                         </div>`;
+                } else if (ModelDownload.state === 'failed') {
+                    holder.innerHTML = `<div style="padding:12px;border-radius:8px;background:var(--bg-secondary);color:var(--error);font-size:var(--fs-sm);">
+                        下载失败：${ModelDownload.error || '未知错误'}。已下载部分会保留，重试将从断点继续。</div>`;
+                } else if (ModelDownload.state === 'verifying') {
+                    holder.innerHTML = `<div style="padding:12px;border-radius:8px;background:var(--bg-secondary);color:var(--text-secondary);font-size:var(--fs-sm);">
+                        正在校验文件完整性…</div>`;
+                } else {
+                    holder.innerHTML = '';
+                }
+            };
+        }, 60);
     } else if (setting.name === '模型切换') {
         const currentModel = localStorage.getItem('current_model') || 'local';
         const cloudConfig = JSON.parse(localStorage.getItem('cloud_api_config') || '{}');
@@ -1590,7 +1816,7 @@ function openSettingDetail(setting) {
                 <div class="perm-item" style="cursor:pointer;" id="model-local">
                     <div>
                         <div class="perm-name">🤖 本地模型</div>
-                        <div class="perm-desc">Qwen2.5-1.5B · MNN · ${modelInfo.exists ? modelInfo.sizeMB + ' MB' : '需下载'}</div>
+                        <div class="perm-desc">${modelInfo.modelName || 'Qwen2.5-1.5B'} · MNN · ${modelInfo.exists ? modelInfo.sizeMB + ' MB' : '需下载'}</div>
                     </div>
                     <div style="text-align:right;">
                         <div style="color:${localColor};font-size:var(--fs-sm);">${localStatus}</div>
@@ -1921,7 +2147,9 @@ const QdStatus = {
         uptime: 0,          // App 进程内服务运行秒数
         chats: 0,           // 已服务对话次数
         modelExists: null,  // 模型文件是否已下载（null=未知）
-        modelMB: 0
+        modelMB: 0,
+        modelName: '',     // 当前激活模型的显示名（随模型商店切换而变）
+        modelId: ''        // 当前激活模型的 id
     },
     subs: [],
     _timer: null,
@@ -1951,6 +2179,8 @@ const QdStatus = {
                 const m = JSON.parse(Qidian.checkModelExists());
                 this.snap.modelExists = !!m.exists;
                 this.snap.modelMB = m.sizeMB || 0;
+                if (m.modelName) this.snap.modelName = m.modelName;
+                if (m.modelId) this.snap.modelId = m.modelId;
             }
         } catch (e) { }
 

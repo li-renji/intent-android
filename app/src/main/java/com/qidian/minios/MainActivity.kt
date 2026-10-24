@@ -58,6 +58,11 @@ class MainActivity : Activity() {
         @Volatile var modelDownloadSpeed: Long = 0
         @Volatile var modelDownloadFile: String = ""
         @Volatile var modelDownloadStartedAt: Long = 0
+        @Volatile var modelDownloadModelId: String = ""
+        @Volatile private var catalogInstance: ModelCatalog? = null
+
+        // 当前 Activity 引用：HTTP 服务需要它来查模型商店（换模型要重建引擎）
+        @Volatile var instance: MainActivity? = null
 
         // 投屏授权全局变量
         @Volatile
@@ -70,6 +75,7 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        instance = this
 
         // 先拉起前台服务：让进程在容器启动前就进入 foreground，
         // 否则熄屏/切后台时会被 cached app freezer 冻结，proot 起不来。
@@ -337,15 +343,35 @@ class MainActivity : Activity() {
     }
 
     /**
-     * 确保模型就绪：读取 assets 清单 → 自动下载 → 校验。
+     * 确保模型就绪：走模型商店。
+     * - 已下载（任意一个）→ 直接用
+     * - 都没下载 → 自动下载默认模型
      * 阻塞调用（已在后台线程中）。
-     * @return true 表示模型可用
      */
     internal fun ensureModelProvisioned(diag: File): Boolean {
+        return provisionModel(diag, null)
+    }
+
+    /**
+     * 下载指定模型（modelId 为空则下载默认模型）。
+     * @param activate 下载完成后是否设为当前激活模型
+     */
+    internal fun provisionModel(diag: File, modelId: String?, activate: Boolean = true): Boolean {
         try {
-            val raw = assets.open("model_manifest.json").use { it.readBytes().toString(Charsets.UTF_8) }
-            val manifest = ModelProvisioner.loadManifest(raw)
-            val modelDir = File(filesDir, "models/${manifest.name}")
+            val catalog = modelCatalog()
+            val targetId = modelId ?: catalog.defaultModelId
+            val entry = catalog.find(targetId)
+            if (entry == null) {
+                val msg = "模型不存在：$targetId"
+                modelDownloadState = "failed"
+                modelDownloadError = msg
+                diag.appendText("$msg\n")
+                notifyModelProgress()
+                return false
+            }
+
+            val manifest = catalog.toManifest(entry)
+            val modelDir = catalog.modelDir(entry.id)
             val provisioner = ModelProvisioner(modelDir, manifest) { p ->
                 modelDownloadState = when (p.phase) {
                     ModelProvisioner.Progress.Phase.CHECKING -> "checking"
@@ -361,17 +387,22 @@ class MainActivity : Activity() {
                 modelDownloadTotalBytes = p.total
                 modelDownloadSpeed = p.bytesPerSec
                 modelDownloadFile = p.fileName
+                modelDownloadModelId = entry.id
                 notifyModelProgress()
             }
             modelProvision = provisioner
 
             if (provisioner.isReady()) {
-                diag.appendText("模型已就绪，跳过下载\n")
+                diag.appendText("模型 ${entry.id} 已就绪，跳过下载\n")
                 modelDownloadState = "done"
+                modelDownloadModelId = entry.id
+                if (activate) catalog.setActiveModel(entry.id)
+                notifyModelProgress()
                 return true
             }
 
             modelDownloadStartedAt = System.currentTimeMillis()
+            modelDownloadModelId = entry.id
             modelDownloadState = "checking"
             notifyModelProgress()
 
@@ -379,11 +410,14 @@ class MainActivity : Activity() {
             if (err != null) {
                 modelDownloadState = "failed"
                 modelDownloadError = err
-                diag.appendText("模型下载失败: $err\n")
+                diag.appendText("模型 ${entry.id} 下载失败: $err\n")
                 notifyModelProgress()
                 return false
             }
-            diag.appendText("模型下载并校验完成\n")
+            diag.appendText("模型 ${entry.id} 下载并校验完成\n")
+            if (activate) catalog.setActiveModel(entry.id)
+            modelDownloadState = "done"
+            notifyModelProgress()
             return true
         } catch (t: Throwable) {
             val msg = "模型初始化异常：${t.message}"
@@ -394,6 +428,54 @@ class MainActivity : Activity() {
             notifyModelProgress()
             return false
         }
+    }
+
+    /** 模型商店实例（进程内单例） */
+    internal fun modelCatalog(): ModelCatalog =
+        catalogInstance ?: ModelCatalog(this).also { catalogInstance = it }
+
+    /**
+     * 切换当前使用的本地模型：重启 AI 引擎加载新模型。
+     * MNN 引擎的权重在 create 时就绑定了，换模型必须重建引擎。
+     */
+    internal fun activateModel(modelId: String): Boolean {
+        val catalog = modelCatalog()
+        if (!catalog.setActiveModel(modelId)) return false
+        val entry = catalog.find(modelId) ?: return false
+
+        // 停掉旧引擎
+        try {
+            aiService?.stop()
+        } catch (t: Throwable) {
+            Log.w(TAG, "旧引擎关闭异常: $t")
+        }
+        aiService = null
+
+        // 用新模型重建
+        val modelDir = catalog.modelDir(modelId)
+        val ok = try {
+            val svc = AiService(this, modelDir, shmFile ?: return false, maxTokens = 256)
+            val diag = File(filesDir, "diag.txt")
+            if (svc.start(diag)) {
+                aiService = svc
+                diag.appendText("已切换模型: $modelId\n")
+                true
+            } else {
+                diag.appendText("模型切换失败(引擎启动失败): $modelId\n")
+                false
+            }
+        } catch (t: Throwable) {
+            Log.e(TAG, "模型切换异常", t)
+            false
+        }
+        // 通知 UI 刷新
+        runOnUiThread {
+            try {
+                webView.evaluateJavascript("window.onModelCatalogChanged && window.onModelCatalogChanged()", null)
+            } catch (_: Throwable) {
+            }
+        }
+        return ok
     }
 
     /** 把下载进度推给 WebView */
@@ -430,23 +512,26 @@ class MainActivity : Activity() {
                 }
                 diag.appendText("shm=$shmFile\n")
 
-                // 启动 MNN AI 服务
-                val mnnModelDir = File(filesDir, "models/qwen2.5-1.5b-mnn")
+                // 启动 MNN AI 服务（用模型商店里当前激活的模型）
+                val catalog = modelCatalog()
+                val activeId = catalog.activeModelId()
+                val mnnModelDir = catalog.modelDir(activeId)
                 aiService = if (mnnModelDir.exists() && File(mnnModelDir, "config.json").exists()) {
                     val svc = AiService(this, mnnModelDir, shmFile!!, maxTokens = 256)
                     if (svc.start(diag)) {
-                        diag.appendText("原生 AI 服务(MNN)已启动\n")
+                        diag.appendText("原生 AI 服务(MNN)已启动: $activeId\n")
                         svc
                     } else {
                         diag.appendText("原生 AI 服务启动失败\n")
                         null
                     }
                 } else {
-                    // 模型缺失：首次启动自动下载（联网即可，无需用户手动操作）
+                    // 模型缺失：首次启动自动下载默认模型（联网即可，无需用户手动操作）
                     diag.appendText("MNN 模型缺失，启动自动下载流程\n")
                     val ok = ensureModelProvisioned(diag)
                     if (ok) {
-                        val svc = AiService(this, mnnModelDir, shmFile!!, maxTokens = 256)
+                        val dir = modelCatalog().modelDir(modelCatalog().activeModelId())
+                        val svc = AiService(this, dir, shmFile!!, maxTokens = 256)
                         if (svc.start(diag)) {
                             diag.appendText("模型下载完成，原生 AI 服务(MNN)已启动\n")
                             svc
@@ -703,12 +788,18 @@ class MainActivity : Activity() {
 
         @JavascriptInterface
         fun checkModelExists(): String {
-            val modelDir = java.io.File(activity.filesDir, "models/qwen2.5-1.5b-mnn")
+            // 反映"当前激活的模型"是否就绪，而不是某个固定 id
+            val catalog = activity.modelCatalog()
+            val activeId = catalog.activeModelId()
+            val modelDir = catalog.modelDir(activeId)
             val weightFile = java.io.File(modelDir, "llm.mnn.weight")
             val configFile = java.io.File(modelDir, "config.json")
-            val exists = weightFile.exists() && configFile.exists()
+            val exists = catalog.isDownloaded(activeId)
             val sizeMB = if (weightFile.exists()) weightFile.length() / 1024 / 1024 else 0
-            return "{\"exists\":$exists,\"sizeMB\":$sizeMB,\"path\":\"${modelDir.absolutePath}\"}"
+            val entry = catalog.find(activeId)
+            return "{\"exists\":$exists,\"sizeMB\":$sizeMB,\"path\":\"${modelDir.absolutePath}\"," +
+                "\"modelId\":\"$activeId\",\"modelName\":\"${entry?.name ?: activeId}\"," +
+                "\"downloadedCount\":${catalog.downloadedIds().size}}"
         }
 
         /** 模型下载状态快照（供 UI 展示进度） */
@@ -749,14 +840,88 @@ class MainActivity : Activity() {
         @JavascriptInterface
         fun checkEnvironment(): String {
             return try {
-                val raw = activity.assets.open("model_manifest.json").use { it.readBytes().toString(Charsets.UTF_8) }
-                val manifest = ModelProvisioner.loadManifest(raw)
-                val modelDir = java.io.File(activity.filesDir, "models/${manifest.name}")
-                val err = ModelProvisioner(modelDir, manifest) {}.preflight()
-                if (err == null) "{\"ok\":true,\"error\":null}"
-                else "{\"ok\":false,\"error\":\"$err\"}"
+                val catalog = activity.modelCatalog()
+                val entry = catalog.find(catalog.defaultModelId)
+                if (entry == null) {
+                    "{\"ok\":false,\"error\":\"模型清单为空\"}"
+                } else {
+                    val manifest = catalog.toManifest(entry)
+                    val modelDir = catalog.modelDir(entry.id)
+                    val err = ModelProvisioner(modelDir, manifest) {}.preflight()
+                    if (err == null) "{\"ok\":true,\"error\":null}"
+                    else "{\"ok\":false,\"error\":\"$err\"}"
+                }
             } catch (t: Throwable) {
                 "{\"ok\":false,\"error\":\"自检异常: ${t.message}\"}"
+            }
+        }
+
+        // ===== 模型商店 =====
+
+        /** 模型商店完整状态（列表 + 已下载 + 当前激活） */
+        @JavascriptInterface
+        fun getModelCatalog(): String = activity.modelCatalog().snapshotJson()
+
+        /** 下载指定模型。返回 {"started":true/false,"error":"..."} */
+        @JavascriptInterface
+        fun downloadModel(modelId: String): String {
+            val catalog = activity.modelCatalog()
+            if (catalog.find(modelId) == null) {
+                return "{\"started\":false,\"error\":\"模型不存在：$modelId\"}"
+            }
+            if (catalog.isDownloaded(modelId)) {
+                return "{\"started\":false,\"error\":\"已下载\"}"
+            }
+            activity.runOnUiThread {
+                MainActivity.modelDownloadError = null
+                MainActivity.modelDownloadState = "checking"
+                MainActivity.modelDownloadModelId = modelId
+                activity.notifyModelProgress()
+            }
+            Thread {
+                activity.provisionModel(File(activity.filesDir, "diag.txt"), modelId, activate = false)
+                activity.runOnUiThread {
+                    try {
+                        activity.webView.evaluateJavascript(
+                            "window.onModelCatalogChanged && window.onModelCatalogChanged()", null)
+                    } catch (_: Throwable) {
+                    }
+                }
+            }.apply { name = "model-download-$modelId"; start() }
+            return "{\"started\":true}"
+        }
+
+        /** 切换当前使用的本地模型（会重启 AI 引擎） */
+        @JavascriptInterface
+        fun activateModel(modelId: String): String {
+            return try {
+                val ok = activity.activateModel(modelId)
+                if (ok) "{\"ok\":true}"
+                else "{\"ok\":false,\"error\":\"切换失败：模型可能未完整下载\"}"
+            } catch (t: Throwable) {
+                "{\"ok\":false,\"error\":\"${t.message}\"}"
+            }
+        }
+
+        /** 删除已下载模型释放空间 */
+        @JavascriptInterface
+        fun deleteModel(modelId: String): String {
+            return try {
+                val ok = activity.modelCatalog().deleteModel(modelId)
+                if (ok) {
+                    activity.runOnUiThread {
+                        try {
+                            activity.webView.evaluateJavascript(
+                                "window.onModelCatalogChanged && window.onModelCatalogChanged()", null)
+                        } catch (_: Throwable) {
+                        }
+                    }
+                    "{\"ok\":true}"
+                } else {
+                    "{\"ok\":false,\"error\":\"删除失败（当前使用的模型不能删除）\"}"
+                }
+            } catch (t: Throwable) {
+                "{\"ok\":false,\"error\":\"${t.message}\"}"
             }
         }
 
@@ -969,9 +1134,13 @@ class MainActivity : Activity() {
         fun getSystemInfo(): String {
             return try {
                 val sb = StringBuilder()
+                val catalog = activity.modelCatalog()
+                val activeId = catalog.activeModelId()
+                val activeEntry = catalog.find(activeId)
                 sb.appendLine("容器状态: ${if (MainActivity.rootfsDir?.exists() == true) "运行中" else "未启动"}")
-                sb.appendLine("AI 引擎: ${if (MainActivity.aiService != null) "MNN (Qwen2.5-1.5B)" else "未就绪"}")
-                sb.appendLine("模型路径: ${activity.filesDir}/models/qwen2.5-1.5b-mnn")
+                sb.appendLine("AI 引擎: ${if (MainActivity.aiService != null) "MNN (${activeEntry?.name ?: activeId})" else "未就绪"}")
+                sb.appendLine("模型路径: ${catalog.modelDir(activeId).absolutePath}")
+                sb.appendLine("已下载模型: ${catalog.downloadedIds().size} 款")
                 sb.toString()
             } catch (e: Exception) {
                 "获取系统信息失败"
@@ -1092,6 +1261,7 @@ class MainActivity : Activity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        if (instance === this) instance = null
         webView.destroy()
     }
 }

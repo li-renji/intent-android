@@ -21,7 +21,7 @@ import java.util.concurrent.atomic.AtomicLong
  *  - 完整性校验：sha256，防止镜像损坏 / 截断导致模型加载崩溃。
  *  - 弱网友好：超时放宽、指数退避重试、进度实时回调。
  *
- * 清单来自 assets/model_manifest.json，运维改版本只改这个文件，不用改代码。
+ * 清单来自 assets/model_catalog.json（模型商店），运维改版本只改那个文件，不用改代码。
  */
 class ModelProvisioner(
     private val modelDir: File,
@@ -71,7 +71,7 @@ class ModelProvisioner(
         private const val MAX_RETRY_PER_MIRROR = 3
         private const val MIN_FREE_SPACE_MARGIN = 64L * 1024 * 1024   // 额外留 64MB 余量
 
-        /** 解析 assets/model_manifest.json */
+        /** 解析模型清单 JSON（兼容旧的单模型 manifest 格式） */
         fun loadManifest(json: String): ModelManifest {
             val jo = org.json.JSONObject(json)
             val files = ArrayList<FileSpec>()
@@ -109,11 +109,22 @@ class ModelProvisioner(
     }
 
     /** 模型是否已经完整就绪 */
+    /**
+     * 模型是否已就绪（可直接加载推理）。
+     *
+     * 判定标准与 ModelCatalog.isDownloaded 一致：看推理必需文件是否齐备，
+     * 而不是与清单逐字节一致 —— 用户手上可能已有同 id 的其他导出版本，
+     * 严格比对会导致"明明能用却重下几百 MB"。
+     */
     fun isReady(): Boolean {
-        val spec = manifest.files.firstOrNull { it.path.endsWith("llm.mnn.weight") }
-            ?: return false
-        val f = File(modelDir, spec.path)
-        return f.exists() && f.length() == spec.bytes && File(modelDir, "config.json").exists()
+        if (!modelDir.exists()) return false
+        if (!File(modelDir, "config.json").exists()) return false
+        val weight = File(modelDir, "llm.mnn.weight")
+        if (!weight.exists() || weight.length() <= 0) return false
+        val hasTokenizer = modelDir.listFiles()?.any {
+            it.name.startsWith("tokenizer") && it.length() > 0
+        } == true
+        return hasTokenizer
     }
 
     /** 环境自检：空间、ABI。返回 null 表示可以下载，否则返回给用户看的错误说明。 */

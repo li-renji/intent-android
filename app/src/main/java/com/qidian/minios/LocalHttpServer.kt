@@ -37,10 +37,20 @@ class LocalHttpServer(
     private val httpPort: Int = 9999,
     private val statusPort: Int = 8822,
     private val aiProvider: () -> AiService?,
-    private val modelName: String = "qwen2.5-1.5b-mnn",
     /** App filesDir：API key 持久化目录（首次启动自动生成，之后固定不变）。 */
-    private val keyDir: File? = null
+    keyDir: File? = null
 ) {
+    private val keyDir: File? = keyDir
+
+    /** 当前激活的模型名（可在运行时切换，故为动态 getter） */
+    private val modelName: String
+        get() = try {
+            val c = MainActivity.instance?.modelCatalog()
+            val id = c?.activeModelId() ?: "qwen2.5-1.5b-mnn"
+            c?.find(id)?.name ?: id
+        } catch (_: Throwable) {
+            "qwen2.5-1.5b-mnn"
+        }
     companion object {
         private const val TAG = "LocalHttp"
         private const val MAX_REQ_BYTES = 256 * 1024      // 单请求上限 256KB
@@ -333,6 +343,7 @@ class LocalHttpServer(
             }
             path == "/status" -> writeJson(out, 200, healthJson())
             path == "/model/status" -> writeJson(out, 200, modelProvisionJson())
+            path == "/model/list" -> writeJson(out, 200, modelCatalogJson())
             else -> writeJson(
                 out, 404,
                 """{"ok":false,"error":"not_found","hint":"可用端点：GET /health，GET /，POST /chat，POST /v1/chat/completions（OpenAI 兼容）"}"""
@@ -680,7 +691,14 @@ class LocalHttpServer(
         val total = MainActivity.modelDownloadTotalBytes
         val got = MainActivity.modelDownloadedBytes
         val pct = if (total > 0) (got * 100 / total).toInt() else 0
-        return """{"ok":true,"state":"$st","percent":$pct,"downloaded":$got,"total":$total,"speed":${MainActivity.modelDownloadSpeed},"file":"${esc(MainActivity.modelDownloadFile)}","error":"${esc(MainActivity.modelDownloadError)}","model":"$modelName"}"""
+        return """{"ok":true,"state":"$st","percent":$pct,"downloaded":$got,"total":$total,"speed":${MainActivity.modelDownloadSpeed},"file":"${esc(MainActivity.modelDownloadFile)}","model_id":"${esc(MainActivity.modelDownloadModelId)}","error":"${esc(MainActivity.modelDownloadError)}","model":"$modelName"}"""
+    }
+
+    /** 模型商店列表（供外部脚本/监控查询已下载模型与当前激活） */
+    private fun modelCatalogJson(): String = try {
+        MainActivity.instance?.modelCatalog()?.snapshotJson() ?: """{"ok":false,"error":"activity unavailable"}"""
+    } catch (t: Throwable) {
+        """{"ok":false,"error":"${t.message?.replace("\"", "") ?: "unknown"}"}"""
     }
 
     /**
