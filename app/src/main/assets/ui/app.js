@@ -381,7 +381,7 @@ function renderMessageList(container) {
  * 当前本地模型的展示信息（随模型商店切换而变化）
  */
 function currentLocalModel() {
-    let info = { modelId: '', modelName: 'Qwen2.5-1.5B', exists: false, sizeMB: 0 };
+    let info = { modelId: '', modelName: '', exists: false, sizeMB: 0 };
     try {
         if (window.Qidian && Qidian.checkModelExists) {
             info = Object.assign(info, JSON.parse(Qidian.checkModelExists()));
@@ -663,7 +663,7 @@ function renderContactList(container) {
         // 动态状态：跟随 MNN 引擎真实加载情况（QdStatus 每 2 秒刷新）
         preview: '本地 AI 助手 · ' + (QdStatus.snap.ai ? '在线'
             : (QdStatus.snap.modelExists === false ? '模型未下载' : '模型加载中')),
-        onClick: () => openContactDetail({ name: '奇点AI', type: 'ai', avatar: '🤖', desc: '基于 Qwen2.5-1.5B 的本地 AI 助手，支持对话、系统管理、界面定制。' })
+        onClick: () => openContactDetail({ name: '奇点AI', type: 'ai', avatar: '🤖', desc: '基于本地大语言模型（MNN 引擎）的 AI 助手，支持对话、系统管理、界面定制。' })
     });
     container.appendChild(aiItem);
 
@@ -1074,10 +1074,10 @@ function renderAppList(container) {
     const aiItem = createListItem({
         avatar: '🧠',
         name: 'AI 引擎',
-        preview: 'MNN · Qwen2.5-1.5B · ' + aiState.text,
+        preview: 'MNN · 本地模型 · ' + aiState.text,
         onClick: () => openAppDetail({
             name: 'AI 引擎', icon: '🧠',
-            desc: '基于 MNN 推理引擎的本地大语言模型（Qwen2.5-1.5B，MNN 4-bit）。支持对话、系统管理、界面定制。首次加载约 2~3 秒。',
+            desc: '基于 MNN 推理引擎的本地大语言模型（MNN 4-bit 量化）。支持对话、系统管理、界面定制。首次加载约 2~3 秒。',
             status: aiState.text, statusKind: aiState.kind
         })
     });
@@ -1098,7 +1098,7 @@ const SETTINGS_LIST = [
     { name: '界面编辑', icon: '✏️', desc: '直接编辑 HTML/CSS/JS 界面文件' },
     { name: '电脑连接', icon: '💻', desc: '局域网无线浏览/修改电脑文件' },
     { name: '模型切换', icon: '🔄', desc: '本地模型 / 云端 API 切换' },
-    { name: '模型商店', icon: '🛒', desc: '下载并切换本地模型（12 款可选）' },
+    { name: '模型商店', icon: '🛒', desc: '下载并切换本地模型（多款可选）' },
     { name: '关于', icon: 'ℹ️', desc: 'qidian编辑器 版本信息' }
 ];
 
@@ -1466,7 +1466,7 @@ function openSettingDetail(setting, target) {
                     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
                         <div>
                             <div style="color:var(--text-secondary);font-size:var(--fs-sm);margin-bottom:4px;">本地模型</div>
-                            <div style="font-size:var(--fs);" id="qd-mon-model-name">Qwen2.5-1.5B-Instruct · MNN 4-bit</div>
+                            <div style="font-size:var(--fs);" id="qd-mon-model-name">本地模型 · MNN 4-bit</div>
                             <div style="color:var(--text-secondary);font-size:var(--fs-sm);margin-top:2px;">
                                 文件：<span id="qd-mon-model-file">…</span>
                                 &nbsp;|&nbsp; 引擎：<span id="qd-mon-model-engine">…</span>
@@ -1531,7 +1531,7 @@ function openSettingDetail(setting, target) {
 
             // 模型：文件下载 与 引擎加载 是两回事，分开显示
             const fileOk = snap.modelExists === true;
-            set('qd-mon-model-name', (snap.modelName || 'Qwen2.5-1.5B') + ' · MNN 4-bit');
+            set('qd-mon-model-name', (snap.modelName || '本地模型') + ' · MNN 4-bit');
             set('qd-mon-model',
                 `<span style="color:${snap.modelExists === false ? 'var(--error)' : 'var(--text-secondary)'};">${snap.modelExists === false ? '未下载' : (fileOk ? snap.modelMB + ' MB' : '检查中')}</span>`);
             setCopy('qd-mon-model', '模型文件: ' + (snap.modelExists === false ? '未下载' : (fileOk ? '已下载 ' + snap.modelMB + ' MB' : '检查中')));
@@ -1544,7 +1544,7 @@ function openSettingDetail(setting, target) {
                     ? '<span style="color:var(--success);">已加载，可对话</span>'
                     : (fileOk ? '<span style="color:var(--warning);">加载中（约 2~3 秒）</span>' : '<span style="color:var(--error);">无模型可加载</span>'));
             setCopy('qd-mon-model-block',
-                '本地模型: ' + (snap.modelName || 'Qwen2.5-1.5B-Instruct') + ' · MNN 4-bit · 文件'
+                '本地模型: ' + (snap.modelName || '本地模型') + ' · MNN 4-bit · 文件'
                 + (fileOk ? '已下载（' + snap.modelMB + ' MB）' : (snap.modelExists === false ? '未下载' : '检查中'))
                 + ' · 引擎' + (aiOk ? '已加载，可对话' : (fileOk ? '加载中' : '无模型可加载')));
 
@@ -1559,7 +1559,7 @@ function openSettingDetail(setting, target) {
                             ModelDownload.start();
                         });
                     }, 50);
-                    set('qd-mon-model-hint', '首次使用需下载本地模型（Qwen2.5-1.5B · MNN，约 839MB）。<br>点击上方按钮即可自动下载，支持断点续传与多镜像加速；下载完成后模型会在手机本地运行，不上传任何数据。');
+                    set('qd-mon-model-hint', '首次使用需下载本地模型（MNN 4-bit 量化，体积因模型而异）。<br>点击上方按钮即可自动下载，支持断点续传与多镜像加速；下载完成后模型会在手机本地运行，不上传任何数据。');
                 } else {
                     slot.innerHTML = fileOk ? '<span style="color:var(--success);font-size:var(--fs-sm);">✓ 文件就绪</span>' : '';
                     set('qd-mon-model-hint', '');
@@ -1810,7 +1810,7 @@ function openSettingDetail(setting, target) {
                 <div class="perm-item" style="cursor:pointer;" id="model-local">
                     <div>
                         <div class="perm-name">🤖 本地模型</div>
-                        <div class="perm-desc">${modelInfo.modelName || 'Qwen2.5-1.5B'} · MNN · ${modelInfo.exists ? modelInfo.sizeMB + ' MB' : '需下载'}</div>
+                        <div class="perm-desc">${modelInfo.modelName || '本地模型'} · MNN · ${modelInfo.exists ? modelInfo.sizeMB + ' MB' : '需下载'}</div>
                     </div>
                     <div style="text-align:right;">
                         <div style="color:${localColor};font-size:var(--fs-sm);">${localStatus}</div>
@@ -3268,6 +3268,26 @@ function scrollToBottom() {
     requestAnimationFrame(() => { body.scrollTop = body.scrollHeight; });
 }
 
+// ========== 当前真实模型名（动态读取，禁止写死） ==========
+// 数据源优先级：
+//   1) Qidian.checkModelExists() 桥（同步）——读 files/models/.active + catalog 里的显示名
+//   2) QdStatus.snap.modelName（异步刷新，来自同一桥 / 本机 /health）
+//   3) 兜底通用文案
+// 这样无论用户切换成 1.5B / 7B / 34B，系统提示词与界面都会跟着实时变。
+function liveModelName() {
+    let n = '';
+    try {
+        if (window.Qidian && Qidian.checkModelExists) {
+            const m = JSON.parse(Qidian.checkModelExists());
+            if (m && m.modelName) n = m.modelName;
+        }
+    } catch (e) { }
+    if (!n && window.QdStatus && QdStatus.snap && QdStatus.snap.modelName) {
+        n = QdStatus.snap.modelName;
+    }
+    return n || '本地大语言模型';
+}
+
 // ========== AI 系统提示（从 .qdai 读取，注入实时时间和系统架构） ==========
 function getAiSystemPrompt() {
     // 注入当前时间
@@ -3278,12 +3298,12 @@ function getAiSystemPrompt() {
     let prompt = `【系统信息】
 当前时间：${timeStr}
 你运行在：奇点OS mini（安卓APK，基于 proot 非 root 容器）
-你的真实身份：你是基于 Qwen2.5-1.5B-Instruct 模型的 AI 助手，通过 MNN 引擎在本地安卓设备上推理。
-不要伪装成其他模型，不要隐瞒自己是千问模型。当用户问你是什么模型时，诚实回答"我是基于千问 Qwen2.5-1.5B 模型的本地 AI 助手"。
+你的真实身份：你是基于 ${liveModelName()} 模型的 AI 助手，通过 MNN 引擎在本地安卓设备上推理。
+不要伪装成其他模型。当用户问你是什么模型时，诚实回答"我是基于 ${liveModelName()} 模型的本地 AI 助手"。
 
 【奇点OS 系统架构】
 - 主框架：proot 容器内的奇点OS模块化系统，目录结构为 /系统/（兼容.qd、功能.qd、界面.qd、微服务.qd）、/AI.qd/、/用户/
-- 副框架：原生安卓本地AI（MNN引擎，Qwen2.5-1.5B，4线程约25.9 tok/s）
+- 副框架：原生安卓本地AI（MNN引擎，${liveModelName()}，本地推理）
 - 通信：主副框架通过共享内存（shm）桥接
 - 模块规范：.qd 是模块文件夹（自带Git仓库），.qds 是系统单文件，.qdai 是AI标记规则文件
 - 兼容层：支持 Win32 EXE（PE加载+API翻译）和安卓APK安装启动
@@ -3355,7 +3375,7 @@ function getIntentSystemPrompt(webOn) {
     return `你是 INTENT（意图），奇点OS的系统级智能体。
 当前时间：${timeStr}
 你运行在：奇点OS mini（安卓APK，proot非root容器，MNN引擎本地推理）
-你的真实模型：Qwen2.5-1.5B-Instruct（千问），不要伪装。
+你的真实模型：${liveModelName()}，不要伪装。
 
 【你的能力】
 你不是普通聊天机器人，你可以真正调用工具操作系统：
