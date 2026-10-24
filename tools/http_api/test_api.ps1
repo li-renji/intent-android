@@ -1,4 +1,4 @@
-# 起点OS mini 本地 AI API 一键测试
+# qidian编辑器 本地 AI API 一键测试
 #
 # 用法：
 #   powershell -ExecutionPolicy Bypass -File test_api.ps1

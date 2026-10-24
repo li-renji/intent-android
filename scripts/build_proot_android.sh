@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ============================================================================
-# 构建 "起点OS mini APK" 的 proot 原生库（在 Linux 或 WSL 上运行）
+# 构建 "qidian编辑器 APK" 的 proot 原生库（在 Linux 或 WSL 上运行）
 #
 # 产物：
 #   app/src/main/jniLibs/arm64-v8a/libproot.so   <- JNI 入口 + proot 核心（System.loadLibrary("proot")）

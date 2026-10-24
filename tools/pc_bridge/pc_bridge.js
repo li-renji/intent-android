@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * 起点OS mini —— 电脑文件桥（PC File Bridge）
+ * qidian编辑器 —— 电脑文件桥（PC File Bridge）
  * =============================================
  * 让手机在同一局域网内无线浏览 / 读取 / 修改 / 上传 / 下载电脑文件。
  * 零依赖，Node 12+ 直接运行：node pc_bridge.js
@@ -258,7 +258,7 @@ const server = http.createServer((req, res) => {
 server.listen(PORT, '0.0.0.0', () => {
     const ips = lanIPs();
     console.log('==============================================');
-    console.log('  起点OS mini · 电脑文件桥 已启动');
+    console.log('  qidian编辑器 · 电脑文件桥 已启动');
     console.log('==============================================');
     console.log('  端口      :', PORT);
     console.log('  本机 IP   :');

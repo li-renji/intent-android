@@ -1,6 +1,6 @@
-# 起点OS mini — 微量 HTTP + AI 桥接（融合版 v2，已验证）
+# qidian编辑器 — 微量 HTTP + AI 桥接（融合版 v2，已验证）
 
-目标：给起点OS mini 装一个**极轻的 HTTP 服务**，让 PC / 局域网设备能调用手机里的本地 AI。
+目标：给qidian编辑器 装一个**极轻的 HTTP 服务**，让 PC / 局域网设备能调用手机里的本地 AI。
 
 v2 把原来的两代实现**融合成一个 C 程序**（`framework/modules/microsrv.c`）：
 同一个进程同时提供 8822 裸状态行（v1 行为）和 9999 完整 HTTP API，AI 推理仍由 `app.js` 桥接。
@@ -170,7 +170,7 @@ adb shell cmd appops set com.qidian.minios RUN_IN_BACKGROUND allow
 
 **仍需用户手动（vivo 特有，adb 无法代劳）**：
 
-- i管家 → 应用管理 → 「起点OS mini」→ 允许后台运行/自启动；
+- i管家 → 应用管理 → 「qidian编辑器」→ 允许后台运行/自启动；
 - 设置 → 电池 → 后台耗电管理 → 允许后台高耗电。
 
 **彻底方案（未做）**：给 App 加前台服务（Foreground Service）。需要改 Kotlin + 重打包 APK，

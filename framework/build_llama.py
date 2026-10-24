@@ -2,9 +2,9 @@
 """用 Zig 交叉编译 llama.cpp 为 aarch64-linux-musl 静态库。"""
 import os, subprocess, sys, glob
 
-ROOT = r'D:\起点OS mini APK\llama.cpp'
+ROOT = r'D:\qidian编辑器 APK\llama.cpp'
 ZIG = r'D:\android-build\zig\zig-windows-x86_64-0.13.0\zig.exe'
-BUILD = r'D:\起点OS mini APK\build\llama'
+BUILD = r'D:\qidian编辑器 APK\build\llama'
 OUT_LIB = os.path.join(BUILD, 'libllama.a')
 
 os.makedirs(BUILD, exist_ok=True)

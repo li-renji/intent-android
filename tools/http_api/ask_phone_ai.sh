@@ -1,5 +1,5 @@
 #!/bin/sh
-# 起点OS mini — PC 端调用手机内 AI（sh 版，文件桥接，不经过 HTTP）
+# qidian编辑器 — PC 端调用手机内 AI（sh 版，文件桥接，不经过 HTTP）
 # 用法: ./ask_phone_ai.sh "你好"
 #
 # 与 ask.ps1 等价，适合在 Git Bash / WSL / Linux 下用。

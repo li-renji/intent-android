@@ -264,7 +264,7 @@ class KeepAliveService : Service() {
             Notification.Builder(this)
         }
 
-        return b.setContentTitle("起点OS mini 运行中")
+        return b.setContentTitle("qidian编辑器 运行中")
             .setContentText("容器与本地 AI 服务常驻，可被局域网调用")
             .setSmallIcon(android.R.drawable.stat_sys_download_done)
             .setContentIntent(pi)

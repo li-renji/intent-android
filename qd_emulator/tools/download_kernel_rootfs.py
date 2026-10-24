@@ -35,7 +35,7 @@ def download(url, output, desc):
         print(f'失败: {e}')
         return False
 
-base = r'D:\起点OS mini APK\qd_emulator'
+base = r'D:\qidian编辑器 APK\qd_emulator'
 
 # 方案1: 用 Buildroot 预编译的最小 Linux 系统
 # 方案2: 用 Alpine Linux 的 virt 镜像

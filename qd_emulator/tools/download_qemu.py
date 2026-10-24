@@ -3,7 +3,7 @@ import os
 import sys
 
 url = 'https://qemu.eu/w64/2024/qemu-w64-setup-20241220.exe'
-output = r'D:\起点OS mini APK\qd_emulator\qemu\qemu-w64-setup.exe'
+output = r'D:\qidian编辑器 APK\qd_emulator\qemu\qemu-w64-setup.exe'
 
 print(f'下载 QEMU 9.x for Windows (64-bit)')
 print(f'URL: {url}')

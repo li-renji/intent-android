@@ -1,4 +1,4 @@
-# 起点OS mini APK
+# qidian编辑器 APK
 
 非 root 安卓用户态容器（最小实现）。参考 [Cateners/tiny_container（小小容器）](https://github.com/Cateners/tiny_container) 的架构，只保留最核心的部分：
 
@@ -13,7 +13,7 @@
 ## 目录结构
 
 ```
-起点OS mini APK/
+qidian编辑器 APK/
 ├── app/
 │   ├── build.gradle
 │   └── src/main/
@@ -111,7 +111,7 @@ app/src/main/assets/libproot_loader.so
 
 ## 运行与验证
 
-1. 安装 APK 到 arm64 安卓设备（Android 7.0+），打开“起点OS mini”；
+1. 安装 APK 到 arm64 安卓设备（Android 7.0+），打开“qidian编辑器”；
 2. 首次启动会先解压 rootfs（几秒），随后自动运行容器；
 3. 查看结果：
 

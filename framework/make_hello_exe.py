@@ -2,7 +2,7 @@
 """生成有导入表的 hello.exe（PE32+ x86-64），用于 Win32 兼容加载器测试。"""
 import struct, os
 
-samp = r'D:\起点OS mini APK\build\samples'
+samp = r'D:\qidian编辑器 APK\build\samples'
 os.makedirs(samp, exist_ok=True)
 exe = os.path.join(samp, 'hello.exe')
 

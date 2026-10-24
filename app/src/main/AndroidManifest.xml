@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  起点OS mini —— 非 root proot 用户态容器。
+  qidian编辑器 —— 非 root proot 用户态容器。
   声明 INTERNET 权限：奇点OS 微服务模块（microsrv.qds）需要在
   容器内监听 127.0.0.1:8822 提供本机回环服务，Android 无此权限时
   AF_INET socket 会直接返回 EPERM。
@@ -27,7 +27,7 @@
     <application
         android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"
-        android:label="起点OS mini"
+        android:label="qidian编辑器"
         android:supportsRtl="true"
         android:usesCleartextTraffic="true"
         android:theme="@android:style/Theme.Material.NoActionBar">

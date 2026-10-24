@@ -1,6 +1,6 @@
 import struct, os, zipfile
 
-samp = r'D:\起点OS mini APK\build\samples'
+samp = r'D:\qidian编辑器 APK\build\samples'
 os.makedirs(samp, exist_ok=True)
 
 # ===== 最小 APK 样本（stored 条目，含 manifest/classes.dex/lib）=====

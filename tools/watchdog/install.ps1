@@ -1,4 +1,4 @@
-# 起点OS mini 看门狗 —— 一键安装（Windows）
+# qidian编辑器 看门狗 —— 一键安装（Windows）
 # 用法： powershell -ExecutionPolicy Bypass -File install.ps1
 param(
     [string]$Adb = ""

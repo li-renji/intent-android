@@ -2,7 +2,7 @@
 """更新 rootfs.tar：把奇点OS模块的文本占位替换为真实二进制实现。"""
 import tarfile, io, os, shutil, hashlib, zlib, time
 
-ROOT = r'D:\起点OS mini APK'
+ROOT = r'D:\qidian编辑器 APK'
 TAR = os.path.join(ROOT, 'app', 'src', 'main', 'assets', 'rootfs.tar')
 MOD = os.path.join(ROOT, 'build', 'modules')
 SAMP = os.path.join(ROOT, 'build', 'samples')

@@ -1,4 +1,4 @@
-# 起点OS mini — PC 端调用手机内 AI（文件桥接，不经过 HTTP）
+# qidian编辑器 — PC 端调用手机内 AI（文件桥接，不经过 HTTP）
 # 用法: .\ask.ps1 "你好"
 #
 # 原理: 通过 adb run-as 往 App 私有目录写 /tmp/api_request，
@@ -43,7 +43,7 @@ if (-not $devices) { throw '没有检测到已连接的设备，检查数据线/
 # App 是否在跑（不在跑 AI 不会响应）
 $pidOut = & $adb shell "pidof $pkg" 2>$null
 if (-not $pidOut) {
-    Write-Host '警告: 起点OS mini 似乎没在运行，AI 不会响应。' -ForegroundColor Yellow
+    Write-Host '警告: qidian编辑器 似乎没在运行，AI 不会响应。' -ForegroundColor Yellow
 }
 
 # 清掉上一次的残留响应
