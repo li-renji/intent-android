@@ -4,6 +4,8 @@ let currentChat = null;
 let isAiThinking = false;
 let currentSetting = null;  // 当前打开的设置项
 let pageHistory = [];        // 页面导航栈
+// 联网搜索总开关：用户在聊天框的「🌐 联网」按键自主控制；默认开，选择持久化。
+let webSearchEnabled = (function () { try { return (localStorage.getItem('web_search_enabled') || '1') === '1'; } catch (e) { return true; } })();
 
 // 压入页面到导航栈
 function pushPage(page) {
@@ -111,40 +113,11 @@ function setupHeaderButtons() {
                 const action = item.dataset.action;
                 avatarMenu.style.display = 'none';
                 if (action === 'settings') {
-                    // 打开设置页面
-                    currentPage = 'settings';
-                    currentChat = null;
-                    document.querySelectorAll('.nav-item').forEach(i => i.classList.remove('active'));
-                    renderList();
-                    renderEmptyContent();
+                    // 打开全屏设置页（不再用侧栏+小弹层）
+                    openSettingsFullscreen();
                 } else if (action === 'about') {
-                    let rows = '';
-                    try {
-                        if (window.Qidian && Qidian.getHttpInfo) {
-                            const info = JSON.parse(Qidian.getHttpInfo());
-                            if (info.listening) {
-                                const baseUrl = 'http://' + info.lan + '/v1';
-                                const key = info.apiKey || '（生成中，稍后再看）';
-                                rows = `
-                                    <div class="qd-kv" data-copy="${baseUrl}"><span>Base URL</span><b>${baseUrl}</b><em>复制</em></div>
-                                    <div class="qd-kv" data-copy="${key}"><span>API Key</span><b>${key}</b><em>复制</em></div>
-                                    <div class="qd-kv" data-copy="qwen2.5-1.5b-mnn"><span>模型名</span><b id="qd-about-model-id">qwen2.5-1.5b-mnn</b><em>复制</em></div>
-                                    <p style="color:var(--text-secondary);font-size:var(--fs-sm);line-height:1.6;margin-top:10px;">
-                                        在 Agent / 客户端里按 OpenAI 兼容格式填上面三项。
-                                        点「复制」或<b>长按条目</b>即可复制。
-                                    </p>`;
-                            } else {
-                                rows = '<p style="color:var(--text-secondary);font-size:var(--fs-sm);">局域网 API 未启动（9999 端口被占用或启动失败）</p>';
-                            }
-                        }
-                    } catch (e) { }
-                    qdModal(`
-                        <h3 style="font-size:var(--fs-lg);margin-bottom:6px;">起点OS mini v1.0</h3>
-                        <p style="color:var(--text-secondary);font-size:var(--fs-sm);margin-bottom:12px;">
-                            本地 AI: Qwen2.5-1.5B (MNN) · 模块化系统 (.qd/.qds/.qdai)
-                        </p>
-                        ${rows}
-                    `);
+                    // 打开全屏设置页并直接定位到「关于」
+                    openSettingsFullscreen('关于');
                 }
             });
         });
@@ -1116,26 +1089,26 @@ function renderAppList(container) {
     container.appendChild(empty);
 }
 
-function renderSettingsList(container) {
-    const settings = [
-        { name: '系统状态', icon: '📊', desc: '容器、AI、微服务运行状态' },
-        { name: '投屏与远程', icon: '📺', desc: '屏幕投射、远程控制、多屏协同' },
-        { name: '外观设置', icon: '🎨', desc: '深色/浅色主题、横屏/竖屏' },
-        { name: 'AI 权限', icon: '🔐', desc: '网络、位置、麦克风等权限管理' },
-        { name: 'AI 配置', icon: '🤖', desc: '模型参数、推理线程、温度' },
-        { name: '界面编辑', icon: '✏️', desc: '直接编辑 HTML/CSS/JS 界面文件' },
-        { name: '电脑连接', icon: '💻', desc: '局域网无线浏览/修改电脑文件' },
-        { name: '模型切换', icon: '🔄', desc: '本地模型 / 云端 API 切换' },
-        { name: '模型商店', icon: '🛒', desc: '下载并切换本地模型（12 款可选）' },
-        { name: '关于', icon: 'ℹ️', desc: '起点OS mini 版本信息' }
-    ];
+const SETTINGS_LIST = [
+    { name: '系统状态', icon: '📊', desc: '容器、AI、微服务运行状态' },
+    { name: '投屏与远程', icon: '📺', desc: '屏幕投射、远程控制、多屏协同' },
+    { name: '外观设置', icon: '🎨', desc: '深色/浅色主题、横屏/竖屏' },
+    { name: 'AI 权限', icon: '🔐', desc: '网络、位置、麦克风等权限管理' },
+    { name: 'AI 配置', icon: '🤖', desc: '模型参数、推理线程、温度' },
+    { name: '界面编辑', icon: '✏️', desc: '直接编辑 HTML/CSS/JS 界面文件' },
+    { name: '电脑连接', icon: '💻', desc: '局域网无线浏览/修改电脑文件' },
+    { name: '模型切换', icon: '🔄', desc: '本地模型 / 云端 API 切换' },
+    { name: '模型商店', icon: '🛒', desc: '下载并切换本地模型（12 款可选）' },
+    { name: '关于', icon: 'ℹ️', desc: 'qidian编辑器 版本信息' }
+];
 
-    settings.forEach(s => {
+function renderSettingsList(container, target) {
+    SETTINGS_LIST.forEach(s => {
         const item = createListItem({
             avatar: s.icon,
             name: s.name,
             preview: s.desc,
-            onClick: () => openSettingDetail(s)
+            onClick: () => openSettingDetail(s, target)
         });
         container.appendChild(item);
     });
@@ -1169,7 +1142,7 @@ function renderEmptyContent() {
     const header = document.getElementById('content-header');
     const body = document.getElementById('content-body');
     const footer = document.getElementById('content-footer');
-    header.innerHTML = '<span>起点OS mini</span>';
+    header.innerHTML = '<span>qidian编辑器</span>';
     body.innerHTML = `
         <div class="empty-state">
             <div class="empty-icon">🚀</div>
@@ -1267,23 +1240,44 @@ function openAppDetail(app) {
     `;
 }
 
-function openSettingDetail(setting) {
-    const header = document.getElementById('content-header');
-    const body = document.getElementById('content-body');
-    const footer = document.getElementById('content-footer');
+function openSettingDetail(setting, target) {
+    const header = target ? target.header : document.getElementById('content-header');
+    const body = target ? target.body : document.getElementById('content-body');
+    const footer = target ? target.footer : document.getElementById('content-footer');
 
-    // 压入设置列表页（返回时回到设置列表）
-    pushPage({ type: 'settings_list' });
-    currentSetting = setting;
+    // 压入设置列表页（返回时回到设置列表）；全屏设置页用自身返回，不污染全局导航栈
+    if (!(target && target.fullscreen)) {
+        pushPage({ type: 'settings_list' });
+        currentSetting = setting;
+    }
 
-    header.innerHTML = `<span style="display:flex;align-items:center;gap:8px;">
-        <span id="back-btn" style="cursor:pointer;padding:4px 8px;border-radius:4px;background:var(--bg-hover);font-size:var(--fs-sm);">← 返回</span>
-        <span>${setting.icon} ${setting.name}</span>
-    </span>`;
-    footer.style.display = 'none';
+    if (target && target.fullscreen) {
+        const tEl = header.querySelector('.qd-fs-title');
+        if (tEl) tEl.textContent = setting.icon + ' ' + setting.name;
+        const bEl = header.querySelector('#qd-fs-back');
+        if (bEl) bEl.style.display = '';
+    } else {
+        header.innerHTML = `<span style="display:flex;align-items:center;gap:8px;">
+            <span id="back-btn" style="cursor:pointer;padding:4px 8px;border-radius:4px;background:var(--bg-hover);font-size:var(--fs-sm);">← 返回</span>
+            <span>${setting.icon} ${setting.name}</span>
+        </span>`;
+    }
+    if (footer) footer.style.display = 'none';
 
     setTimeout(() => {
-        document.getElementById('back-btn')?.addEventListener('click', goBack);
+        if (target && target.fullscreen) {
+            const bEl = header.querySelector('#qd-fs-back');
+            if (bEl) bEl.addEventListener('click', () => {
+                if (fsTarget && fsTarget.header) {
+                    const t = fsTarget.header.querySelector('.qd-fs-title');
+                    if (t) t.textContent = '⚙️ 设置';
+                    bEl.style.display = 'none';
+                }
+                renderSettingsList(fsTarget.body, fsTarget);
+            });
+        } else {
+            document.getElementById('back-btn')?.addEventListener('click', goBack);
+        }
     }, 50);
 
     if (setting.name && setting.name.indexOf('投屏') >= 0) {
@@ -1332,7 +1326,7 @@ function openSettingDetail(setting) {
                 </div>
             </div>
         `;
-        footer.style.display = 'none';
+        if (footer) footer.style.display = 'none';
 
         setTimeout(() => {
             document.getElementById('cast-request')?.addEventListener('click', () => {
@@ -1402,27 +1396,27 @@ function openSettingDetail(setting) {
                 </div>
             </div>
         `;
-        footer.style.display = 'none';
+        if (footer) footer.style.display = 'none';
         setTimeout(() => {
             document.getElementById('theme-dark')?.addEventListener('click', () => {
                 localStorage.setItem('theme', 'dark');
                 document.documentElement.removeAttribute('data-theme');
-                openSettingDetail(setting);
+                openSettingDetail(setting, target);
             });
             document.getElementById('theme-light')?.addEventListener('click', () => {
                 localStorage.setItem('theme', 'light');
                 document.documentElement.setAttribute('data-theme', 'light');
-                openSettingDetail(setting);
+                openSettingDetail(setting, target);
             });
             document.getElementById('ori-landscape')?.addEventListener('click', () => {
                 localStorage.setItem('orientation', 'landscape');
                 if (window.Qidian && Qidian.setOrientation) Qidian.setOrientation('landscape');
-                openSettingDetail(setting);
+                openSettingDetail(setting, target);
             });
             document.getElementById('ori-portrait')?.addEventListener('click', () => {
                 localStorage.setItem('orientation', 'portrait');
                 if (window.Qidian && Qidian.setOrientation) Qidian.setOrientation('portrait');
-                openSettingDetail(setting);
+                openSettingDetail(setting, target);
             });
         }, 50);
         return;
@@ -1871,7 +1865,7 @@ function openSettingDetail(setting) {
                 }
                 localStorage.setItem('current_model', 'local');
                 alert('已切换到本地模型');
-                openSettingDetail(setting);
+                openSettingDetail(setting, target);
             });
             document.getElementById('download-local-model')?.addEventListener('click', () => {
                 ModelDownload.bind();
@@ -1885,7 +1879,7 @@ function openSettingDetail(setting) {
                 }
                 localStorage.setItem('current_model', 'cloud');
                 alert('已切换到云端 API');
-                openSettingDetail(setting);
+                openSettingDetail(setting, target);
             });
             document.getElementById('save-cloud-config')?.addEventListener('click', () => {
                 const provider = document.getElementById('cloud-provider-select').value;
@@ -1973,7 +1967,7 @@ function openSettingDetail(setting) {
         body.innerHTML = `
             <div style="display:flex;flex-direction:column;align-items:center;padding:30px 20px;">
                 <div class="detail-avatar">${setting.icon}</div>
-                <h3 style="margin-bottom:8px;font-size:var(--fs-lg);">起点OS mini</h3>
+                <h3 style="margin-bottom:8px;font-size:var(--fs-lg);">qidian编辑器</h3>
                 <p style="color:var(--text-secondary);font-size:var(--fs-sm);margin-bottom:4px;">版本 v1.0.0</p>
                 <p style="color:var(--text-secondary);font-size:var(--fs-sm);margin-bottom:16px;">基于 proot 容器 + MNN AI 引擎</p>
                 <div style="text-align:center;color:var(--text-secondary);font-size:var(--fs-sm);line-height:1.8;margin-bottom:16px;">
@@ -1993,7 +1987,7 @@ function openSettingDetail(setting) {
         body.innerHTML = `
             <div style="display:flex;flex-direction:column;align-items:center;padding:40px 20px;">
                 <div class="detail-avatar">${setting.icon}</div>
-                <h3 style="margin-bottom:8px;font-size:var(--fs-lg);">起点OS mini</h3>
+                <h3 style="margin-bottom:8px;font-size:var(--fs-lg);">qidian编辑器</h3>
                 <p style="color:var(--text-secondary);font-size:var(--fs-sm);margin-bottom:4px;">版本 v1.0.0</p>
                 <p style="color:var(--text-secondary);font-size:var(--fs-sm);margin-bottom:16px;">基于 proot 容器 + MNN AI 引擎</p>
                 <div style="text-align:center;color:var(--text-secondary);font-size:var(--fs-sm);line-height:1.8;">
@@ -2004,6 +1998,45 @@ function openSettingDetail(setting) {
             </div>
         `;
     }
+}
+
+// ========== 全屏设置页 ==========
+// 设置/关于改成全屏页：点开即占满整个屏幕，自带返回/关闭，不再用侧栏+小弹层（qdModal）。
+let fsTarget = null;
+
+function openSettingsFullscreen(initialName) {
+    closeSettingsFullscreen();
+    const ov = document.createElement('div');
+    ov.id = 'qd-settings-fs';
+    ov.innerHTML = `
+        <div class="qd-fs-header" id="qd-fs-header">
+            <button id="qd-fs-back" class="qd-fs-back" type="button">← 返回</button>
+            <span class="qd-fs-title">⚙️ 设置</span>
+            <button id="qd-fs-close" class="qd-fs-close" type="button" title="关闭">✕</button>
+        </div>
+        <div class="qd-fs-body" id="qd-fs-body"></div>
+    `;
+    document.body.appendChild(ov);
+    fsTarget = {
+        header: ov.querySelector('#qd-fs-header'),
+        body: ov.querySelector('#qd-fs-body'),
+        footer: null,
+        fullscreen: true
+    };
+    ov.querySelector('#qd-fs-close').addEventListener('click', closeSettingsFullscreen);
+    // 点遮罩/返回键关闭（移动端体验）
+    ov.addEventListener('click', (e) => { if (e.target === ov) closeSettingsFullscreen(); });
+    renderSettingsList(fsTarget.body, fsTarget);
+    if (initialName) {
+        const s = SETTINGS_LIST.find(x => x.name === initialName);
+        if (s) openSettingDetail(s, fsTarget);
+    }
+}
+
+function closeSettingsFullscreen() {
+    const old = document.getElementById('qd-settings-fs');
+    if (old) old.remove();
+    fsTarget = null;
 }
 
 function handleFriendRequest(req) {
@@ -2123,6 +2156,7 @@ function openFileEditor(filename) {
 function setupChatInput() {
     const input = document.getElementById('message-input');
     const sendBtn = document.getElementById('send-btn');
+    const wsToggle = document.getElementById('web-search-toggle');
 
     sendBtn.addEventListener('click', sendMessage);
     input.addEventListener('keydown', (e) => {
@@ -2131,6 +2165,22 @@ function setupChatInput() {
             sendMessage();
         }
     });
+
+    // 联网搜索开关：由用户在聊天框自主决定是否开启（持久化到 localStorage）
+    function updateWebSearchBtn() {
+        if (!wsToggle) return;
+        wsToggle.classList.toggle('on', webSearchEnabled);
+        wsToggle.title = webSearchEnabled ? '联网搜索：开（点按关闭）' : '联网搜索：关（点按开启）';
+        wsToggle.setAttribute('aria-pressed', webSearchEnabled ? 'true' : 'false');
+    }
+    if (wsToggle) {
+        wsToggle.addEventListener('click', () => {
+            webSearchEnabled = !webSearchEnabled;
+            try { localStorage.setItem('web_search_enabled', webSearchEnabled ? '1' : '0'); } catch (e) { }
+            updateWebSearchBtn();
+        });
+        updateWebSearchBtn();
+    }
 }
 
 // ========== 实时状态中心 ==========
@@ -2780,7 +2830,8 @@ function sendMessage() {
                                 text,
                                 (t) => { if (contentEl) contentEl.textContent = '🧠 ' + String(t).slice(0, 80); },
                                 (tool) => { if (contentEl) contentEl.textContent = '🔧 ' + String(tool).slice(0, 100); },
-                                null
+                                null,
+                                webSearchEnabled
                             );
                             rawAnswer = agentRes.answer || agentRes.fullResponse || '';
                             rawThinking = agentRes.thinking || '';
@@ -3270,10 +3321,37 @@ function updateMsgBadge() {
 // ========== INTENT 意图 Agent ==========
 
 // INTENT 系统提示词
-function getIntentSystemPrompt() {
+// INTENT 系统提示词
+// webOn=true 时提供联网工具并启用「联网优先」规则；false 时禁用联网，模型凭自身知识回答。
+function getIntentSystemPrompt(webOn) {
+    if (webOn === undefined) webOn = true;
     const now = new Date();
     const weekdays = ['星期日','星期一','星期二','星期三','星期四','星期五','星期六'];
     const timeStr = `${now.getFullYear()}年${now.getMonth()+1}月${now.getDate()}日 ${weekdays[now.getDay()]} ${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
+    let toolLines = `- exec|命令 → 在容器内执行Linux命令
+- readFile|路径 → 读取容器内文件
+- writeFile|路径|内容 → 写入文件
+- readUI|文件名 → 读取界面文件(index.html/style.css/app.js)
+- writeUI|文件名|内容 → 修改界面并自动刷新
+- launchApp|包名 → 启动安卓应用
+- getStatus → 获取系统状态
+- searchKB|关键词 → 搜索知识库`;
+    if (webOn) {
+        toolLines += `
+- searchWeb|关键词 → 联网搜索网页，返回标题、摘要与链接（设备已联网时可用）
+- fetchPage|网址 → 抓取网页正文文本，用于阅读搜索结果的具体内容`;
+    }
+    let rule7;
+    if (webOn) {
+        rule7 = `7. 联网优先：只要问题涉及最新信息、新闻、实时数据（天气/股价/汇率/赛事/政策法规）、
+   你不确定或可能过时的知识，必须先用 searchWeb 检索，再基于检索结果回答，
+   不要凭记忆编造。若搜索返回"网络不可用"或"搜索失败"，如实告诉用户你当前无法联网。
+   简单闲聊、创意写作、纯本地操作等无需联网的任务，直接回答即可。`;
+    } else {
+        rule7 = `7. 联网搜索已关闭：用户在聊天框关闭了「🌐 联网」开关，禁止调用 searchWeb/fetchPage。
+   遇到需要最新/实时信息的问题，如实告诉用户"当前未开启联网搜索，请在聊天框打开🌐开关即可联网"。
+   其余问题用你的知识直接回答，不要尝试联网。`;
+    }
     return `你是 INTENT（意图），奇点OS的系统级智能体。
 当前时间：${timeStr}
 你运行在：奇点OS mini（安卓APK，proot非root容器，MNN引擎本地推理）
@@ -3281,16 +3359,7 @@ function getIntentSystemPrompt() {
 
 【你的能力】
 你不是普通聊天机器人，你可以真正调用工具操作系统：
-- exec|命令 → 在容器内执行Linux命令
-- readFile|路径 → 读取容器内文件
-- writeFile|路径|内容 → 写入文件
-- readUI|文件名 → 读取界面文件(index.html/style.css/app.js)
-- writeUI|文件名|内容 → 修改界面并自动刷新
-- launchApp|包名 → 启动安卓应用
-- getStatus → 获取系统状态
-- searchKB|关键词 → 搜索知识库
-- searchWeb|关键词 → 联网搜索网页，返回标题、摘要与链接（设备已联网时可用）
-- fetchPage|网址 → 抓取网页正文文本，用于阅读搜索结果的具体内容
+${toolLines}
 
 【输出格式】严格遵守：
 【思考】分析用户意图，规划步骤
@@ -3304,10 +3373,7 @@ function getIntentSystemPrompt() {
 4. 修改界面前先 readUI 读取当前内容
 5. 简单任务直接回答，复杂任务分步调用工具
 6. 每次回答必须有【思考】，可以没有【工具】但必须有【回答】
-7. 联网优先：只要问题涉及最新信息、新闻、实时数据（天气/股价/汇率/赛事/政策法规）、
-   你不确定或可能过时的知识，必须先用 searchWeb 检索，再基于检索结果回答，
-   不要凭记忆编造。若搜索返回"网络不可用"或"搜索失败"，如实告诉用户你当前无法联网。
-   简单闲聊、创意写作、纯本地操作等无需联网的任务，直接回答即可。`;
+${rule7}`;
 }
 
 // 执行单个工具调用，返回结果字符串
@@ -3366,11 +3432,13 @@ function executeTool(toolStr) {
             case 'searchKB':
                 return '[功能开发中] 知识库搜索';
             case 'searchWeb':
+                if (!webSearchEnabled) return '[联网搜索已关闭] 用户未在聊天框开启🌐联网开关';
                 if (window.Qidian && Qidian.searchWeb) {
                     return Qidian.searchWeb(arg);
                 }
                 return '[错误] searchWeb 不可用';
             case 'fetchPage':
+                if (!webSearchEnabled) return '[联网搜索已关闭] 用户未在聊天框开启🌐联网开关';
                 if (window.Qidian && Qidian.fetchPage) {
                     return Qidian.fetchPage(arg);
                 }
@@ -3384,8 +3452,8 @@ function executeTool(toolStr) {
 }
 
 // INTENT Agent 主循环：思考→调用工具→观察→继续→回答
-async function intentAgentLoop(userText, onThinking, onToolCall, onAnswer) {
-    let prompt = getIntentSystemPrompt() + '\n\n用户: ' + userText + '\nINTENT: ';
+async function intentAgentLoop(userText, onThinking, onToolCall, onAnswer, webOn) {
+    let prompt = getIntentSystemPrompt(webOn) + '\n\n用户: ' + userText + '\nINTENT: ';
     let fullResponse = '';
     const maxRounds = 5; // 最多5轮工具调用
 
