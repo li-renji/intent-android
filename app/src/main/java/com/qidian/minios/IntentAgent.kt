@@ -38,6 +38,12 @@ object IntentAgent {
 
         /** 搜索知识库。 */
         fun searchKB(keyword: String): String
+
+        /** 联网搜索网页（标题/摘要/链接）。仅当设备已联网时可用。 */
+        fun searchWeb(keyword: String): String
+
+        /** 抓取网页正文文本，供模型阅读具体内容。 */
+        fun fetchPage(url: String): String
     }
 
     @Volatile
@@ -67,6 +73,8 @@ object IntentAgent {
 - launchApp|包名 → 启动安卓应用
 - getStatus → 获取系统状态
 - searchKB|关键词 → 搜索知识库
+- searchWeb|关键词 → 联网搜索网页，返回标题、摘要与链接（设备已联网时可用）
+- fetchPage|网址 → 抓取网页正文文本，用于阅读搜索结果的具体内容
 $extraTools
 【输出格式】严格遵守：
 【思考】分析用户意图，规划步骤
@@ -79,7 +87,11 @@ $extraTools
 3. 安全：禁止 rm -rf /、mkfs 等危险命令
 4. 修改界面前先 readUI 读取当前内容
 5. 简单任务直接回答，复杂任务分步调用工具
-6. 每次回答必须有【思考】，可以没有【工具】但必须有【回答】"""
+6. 每次回答必须有【思考】，可以没有【工具】但必须有【回答】
+7. 联网优先：只要问题涉及最新信息、新闻、实时数据（天气/股价/汇率/赛事/政策法规）、
+   你不确定或可能过时的知识，必须先用 searchWeb 检索，再基于检索结果回答，
+   不要凭记忆编造。若搜索返回"网络不可用"或"搜索失败"，如实告诉用户你当前无法联网。
+   简单闲聊、创意写作、纯本地操作等无需联网的任务，直接回答即可。"""
     }
 
     /** 从模型输出里解析出工具调用行，返回 null 表示这轮没有工具调用。 */
@@ -132,6 +144,8 @@ $extraTools
                 "launchApp" -> h.launchApp(arg)
                 "getStatus" -> h.status()
                 "searchKB" -> h.searchKB(arg)
+                "searchWeb" -> h.searchWeb(arg)
+                "fetchPage" -> h.fetchPage(arg)
                 else -> "[错误] 未知工具: $tool"
             }
         } catch (t: Throwable) {

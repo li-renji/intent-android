@@ -13,7 +13,7 @@ if (!page) { console.error('no page'); process.exit(1); }
 const ws = new WebSocket(page.webSocketDebuggerUrl);
 const expr = process.argv[2] || `document.title`;
 let id = 0;
-ws.onopen = () => ws.send(JSON.stringify({id: ++id, method: 'Runtime.evaluate', params: {expression: expr, returnByValue: true}}));
+ws.onopen = () => ws.send(JSON.stringify({id: ++id, method: 'Runtime.evaluate', params: {expression: expr, returnByValue: true, awaitPromise: true}}));
 ws.onmessage = (ev) => {
   const d = JSON.parse(ev.data);
   console.log(d.result?.result?.value ?? JSON.stringify(d));

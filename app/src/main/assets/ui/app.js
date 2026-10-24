@@ -2766,24 +2766,36 @@ function sendMessage() {
                     typewriterEffect(aiMsg, response, 15);
                     currentChat.messages.push({ role: 'ai', content: response, thinking: '' });
                 } else {
-                    // 本地模型：优先走 App 原生 MNN（Qidian.callAI），直接调 inferSync，
-                    // 不经过 proot 容器、不经过 WebView 文件轮询。
+                    // 本地模型：走 App 原生 MNN（Qidian.callAI），通过 INTENT Agent
+                    // 循环执行（支持联网搜索 searchWeb / fetchPage 等工具）。
                     // 只有老版本 APK（没有 callAI 接口）才退回容器路径。
                     const contentEl = thinkingMsg.querySelector('.message-content');
                     const hasNativeAI = !!(window.Qidian && typeof Qidian.callAI === 'function');
-                    let result;
+                    let rawAnswer = '', rawThinking = '', usedAgent = false;
 
                     if (hasNativeAI) {
                         if (contentEl) contentEl.textContent = '🧠 本地模型推理中…';
-                        result = await qdNativeChat(text, function (ms) {
-                            if (contentEl) contentEl.textContent = '⏳ 模型加载中… ' + Math.round(ms / 1000) + 's';
-                        });
+                        try {
+                            const agentRes = await intentAgentLoop(
+                                text,
+                                (t) => { if (contentEl) contentEl.textContent = '🧠 ' + String(t).slice(0, 80); },
+                                (tool) => { if (contentEl) contentEl.textContent = '🔧 ' + String(tool).slice(0, 100); },
+                                null
+                            );
+                            rawAnswer = agentRes.answer || agentRes.fullResponse || '';
+                            rawThinking = agentRes.thinking || '';
+                            usedAgent = true;
+                        } catch (e) {
+                            rawAnswer = '[INTENT 异常] ' + e.message;
+                            rawThinking = '';
+                            usedAgent = true;
+                        }
                     } else {
                         if (contentEl) contentEl.textContent = '🧠 正在连接容器...';
                         // 转义用户输入中的单引号
                         const escapedText = text.replace(/'/g, "'\\''");
                         const cmd = "/AI.qd/ai_service.qds /shm/shm.dat '" + escapedText + "'";
-                        result = await qdExecWithRetry(cmd, {
+                        rawAnswer = await qdExecWithRetry(cmd, {
                             timeoutMs: 90000,
                             onWait: function (ms) {
                                 if (contentEl) contentEl.textContent = '⏳ 容器启动中… ' + Math.round(ms / 1000) + 's';
@@ -2794,14 +2806,21 @@ function sendMessage() {
                     // 移除思考中消息
                     thinkingMsg.remove();
 
-                    // 结果可能包含思考过程和回答，尝试提取
-                    let answer = result.trim();
-                    let thinking = '';
-                    const thinkMatch = result.match(/【思考】([\s\S]*?)【回答】/);
-                    if (thinkMatch) {
-                        thinking = thinkMatch[1].trim();
-                        const answerIdx = result.indexOf('【回答】');
-                        if (answerIdx >= 0) answer = result.substring(answerIdx + 4).trim();
+                    // 解析结果（agent 模式已拆好 思考/回答；容器模式走正则）
+                    let answer, thinking;
+                    if (usedAgent) {
+                        answer = rawAnswer.trim();
+                        thinking = rawThinking.trim();
+                    } else {
+                        let r2 = rawAnswer.trim();
+                        thinking = '';
+                        const thinkMatch = r2.match(/【思考】([\s\S]*?)【回答】/);
+                        if (thinkMatch) {
+                            thinking = thinkMatch[1].trim();
+                            const answerIdx = r2.indexOf('【回答】');
+                            if (answerIdx >= 0) r2 = r2.substring(answerIdx + 4).trim();
+                        }
+                        answer = r2;
                     }
 
                     // 清理多余空行：连续2个以上换行压缩为1个，去掉首尾空白
@@ -3270,6 +3289,8 @@ function getIntentSystemPrompt() {
 - launchApp|包名 → 启动安卓应用
 - getStatus → 获取系统状态
 - searchKB|关键词 → 搜索知识库
+- searchWeb|关键词 → 联网搜索网页，返回标题、摘要与链接（设备已联网时可用）
+- fetchPage|网址 → 抓取网页正文文本，用于阅读搜索结果的具体内容
 
 【输出格式】严格遵守：
 【思考】分析用户意图，规划步骤
@@ -3282,7 +3303,11 @@ function getIntentSystemPrompt() {
 3. 安全：禁止 rm -rf /、mkfs 等危险命令
 4. 修改界面前先 readUI 读取当前内容
 5. 简单任务直接回答，复杂任务分步调用工具
-6. 每次回答必须有【思考】，可以没有【工具】但必须有【回答】`;
+6. 每次回答必须有【思考】，可以没有【工具】但必须有【回答】
+7. 联网优先：只要问题涉及最新信息、新闻、实时数据（天气/股价/汇率/赛事/政策法规）、
+   你不确定或可能过时的知识，必须先用 searchWeb 检索，再基于检索结果回答，
+   不要凭记忆编造。若搜索返回"网络不可用"或"搜索失败"，如实告诉用户你当前无法联网。
+   简单闲聊、创意写作、纯本地操作等无需联网的任务，直接回答即可。`;
 }
 
 // 执行单个工具调用，返回结果字符串
@@ -3340,6 +3365,16 @@ function executeTool(toolStr) {
                 return '[错误] getStatus 不可用';
             case 'searchKB':
                 return '[功能开发中] 知识库搜索';
+            case 'searchWeb':
+                if (window.Qidian && Qidian.searchWeb) {
+                    return Qidian.searchWeb(arg);
+                }
+                return '[错误] searchWeb 不可用';
+            case 'fetchPage':
+                if (window.Qidian && Qidian.fetchPage) {
+                    return Qidian.fetchPage(arg);
+                }
+                return '[错误] fetchPage 不可用';
             default:
                 return '[未知工具] ' + tool;
         }
@@ -3355,6 +3390,9 @@ async function intentAgentLoop(userText, onThinking, onToolCall, onAnswer) {
     const maxRounds = 5; // 最多5轮工具调用
 
     for (let round = 0; round < maxRounds; round++) {
+        // 让出主线程，使上一轮的「🔧 正在搜索…」等提示能渲染出来
+        await new Promise(function (r) { setTimeout(r, 40); });
+
         // 调用 AI
         let response = '';
         if (window.Qidian && Qidian.callAI) {

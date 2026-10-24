@@ -99,6 +99,9 @@ class MainActivity : Activity() {
         // 注册意图 Agent 的工具宿主：让外部 agent 能通过 HTTP 驱动手机执行任务
         registerToolHost()
 
+        // 联网搜索模块需要 Context 判断网络状态
+        WebSearch.attach(applicationContext)
+
         // 系统背景纯黑
         window.decorView.setBackgroundColor(android.graphics.Color.BLACK)
 
@@ -279,6 +282,10 @@ class MainActivity : Activity() {
 
             override fun searchKB(keyword: String): String =
                 execInContainer("grep -n -i -- \"$keyword\" '/系统/功能.qd/知识库.qd/知识库.qdai' | head -20")
+
+            override fun searchWeb(keyword: String): String = WebSearch.search(keyword)
+
+            override fun fetchPage(url: String): String = WebSearch.fetchPage(url)
         }
     }
 
@@ -934,6 +941,28 @@ class MainActivity : Activity() {
                 "{\"ok\":false,\"error\":\"${t.message}\"}"
             }
         }
+
+        // ===== 联网搜索 =====
+
+        /** 联网搜索：返回标题/摘要/链接文本。 */
+        @JavascriptInterface
+        fun searchWeb(keyword: String): String = try {
+            WebSearch.search(keyword)
+        } catch (t: Throwable) {
+            "[搜索异常] ${t.message}"
+        }
+
+        /** 抓取网页正文文本。 */
+        @JavascriptInterface
+        fun fetchPage(url: String): String = try {
+            WebSearch.fetchPage(url)
+        } catch (t: Throwable) {
+            "[抓取异常] ${t.message}"
+        }
+
+        /** 设备当前是否联网。 */
+        @JavascriptInterface
+        fun isOnline(): String = "{\"online\":${WebSearch.isOnline(activity)}}"
 
         @JavascriptInterface
         fun openExternalUrl(url: String) {

@@ -320,7 +320,9 @@ class LocalHttpServer(
             path == "/v1/chat/completions" || path == "/v1/models" ||
             path == "/agent/run" ||
             // 模型安装/激活/删除有副作用（占空间、切引擎），必须鉴权
-            path == "/model/install" || path == "/model/activate" || path == "/model/delete"
+            path == "/model/install" || path == "/model/activate" || path == "/model/delete" ||
+            // 联网搜索/fetch 会对外发请求，有 SSRF 风险，也须鉴权
+            path == "/websearch" || path == "/fetch" || path == "/net"
         if (protected && !checkAuth(headers)) {
             writeJson(
                 out, 401,
@@ -372,6 +374,9 @@ class LocalHttpServer(
                 if (method != "POST") writeJson(out, 405, """{"ok":false,"error":"method_not_allowed"}""")
                 else handleModelDelete(out, body)
             }
+            path == "/net" -> writeJson(out, 200, netStatusJson())
+            path == "/websearch" -> handleWebSearch(out, query)
+            path == "/fetch" -> handleFetchPage(out, query)
             else -> writeJson(
                 out, 404,
                 """{"ok":false,"error":"not_found","hint":"可用端点：GET /health，GET /，POST /chat，POST /v1/chat/completions（OpenAI 兼容）"}"""
@@ -795,6 +800,55 @@ class LocalHttpServer(
         if (ok) writeJson(out, 200, """{"ok":true,"deleted":"$id"}""")
         else writeJson(out, 400, """{"ok":false,"error":"删除失败（当前使用的模型不能删除）"}""")
     }
+
+    // ==================== 联网搜索（本地 AI 的上网能力） ====================
+
+    /** GET /net —— 设备当前是否真的联网。 */
+    private fun netStatusJson(): String {
+        val online = try { appContext?.let { WebSearch.isOnline(it) } ?: false } catch (_: Throwable) { false }
+        return """{"ok":true,"online":$online}"""
+    }
+
+    /** GET /websearch?q=关键词[&n=5] —— 联网搜索，返回结果列表。 */
+    private fun handleWebSearch(out: OutputStream, query: String) {
+        val q = queryParam(query, "q")
+        if (q.isNullOrBlank()) {
+            writeJson(out, 400, """{"ok":false,"error":"缺少 q 参数，如 /websearch?q=今天新闻"}""")
+            return
+        }
+        val n = queryParam(query, "n")?.toIntOrNull()?.coerceIn(1, 10) ?: 5
+        val text = WebSearch.search(q, n)
+        // 把纯文本结果也尽量结构化返回
+        val lines = text.lines().filter { it.isNotBlank() }
+        writeJson(out, 200, """{"ok":true,"query":"$q","raw":${jsonStr(text)},"lines":${jsonArr(lines)}}""")
+    }
+
+    /** GET /fetch?url=https://... —— 抓取网页正文。 */
+    private fun handleFetchPage(out: OutputStream, query: String) {
+        val url = queryParam(query, "url")
+        if (url.isNullOrBlank()) {
+            writeJson(out, 400, """{"ok":false,"error":"缺少 url 参数，如 /fetch?url=https://example.com"}""")
+            return
+        }
+        val text = WebSearch.fetchPage(url)
+        writeJson(out, 200, """{"ok":true,"url":"$url","text":${jsonStr(text)}}""")
+    }
+
+    /** 从原始 query 串里取参数（不做 URL 解码以外的特殊处理）。 */
+    private fun queryParam(query: String, key: String): String? {
+        if (query.isBlank()) return null
+        for (pair in query.split("&")) {
+            val kv = pair.split("=", limit = 2)
+            if (kv.size == 2 && kv[0] == key) {
+                return try { java.net.URLDecoder.decode(kv[1], "UTF-8") } catch (_: Throwable) { kv[1] }
+            }
+        }
+        return null
+    }
+
+    private fun jsonStr(s: String): String = org.json.JSONObject.quote(s)
+    private fun jsonArr(lines: List<String>): String =
+        "[" + lines.joinToString(",") { org.json.JSONObject.quote(it) } + "]"
 
     /** 从 JSON body 里取字符串字段（极简解析，避免为此引入依赖） */
     private fun extractJsonString(body: String, key: String): String? = try {

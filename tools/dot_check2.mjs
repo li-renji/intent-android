@@ -1,0 +1,24 @@
+const ws = new WebSocket('ws://127.0.0.1:9222/devtools/page/3A84B1B9984AA1B39DA6C9B21AC958DD');
+const expr = `(() => {
+  const out = {};
+  const r = el => { if (!el) return null; const b = el.getBoundingClientRect(); return [Math.round(b.x), Math.round(b.y), Math.round(b.width), Math.round(b.height)]; };
+  out.viewport = window.innerWidth + 'x' + window.innerHeight;
+  out.mqPortrait = matchMedia('(orientation: portrait)').matches;
+  out.bodyScroll = document.body.scrollWidth + 'x' + document.body.scrollHeight;
+  out.app = r(document.querySelector('.app'));
+  out.sidebar = r(document.querySelector('.sidebar'));
+  out.listPanel = r(document.querySelector('.list-panel'));
+  out.listHeader = r(document.querySelector('.list-header'));
+  out.contentPanel = r(document.querySelector('.content-panel'));
+  out.dot = r(document.getElementById('qd-status-dot'));
+  const dot = document.getElementById('qd-status-dot');
+  out.dotCss = dot ? (dot.offsetWidth + 'x' + dot.offsetHeight + ' ml=' + getComputedStyle(dot).marginLeft) : null;
+  out.bodyClass = document.body.className;
+  out.lhStyle = (() => { const lh = document.querySelector('.list-header'); const cs = getComputedStyle(lh); return cs.display + ' justify=' + cs.justifyContent; })();
+  return JSON.stringify(out);
+})()`;
+let id = 0;
+ws.onopen = () => ws.send(JSON.stringify({id: ++id, method: 'Runtime.evaluate', params: {expression: expr, returnByValue: true}}));
+ws.onmessage = (ev) => { console.log(JSON.parse(ev.data).result?.result?.value || ev.data); ws.close(); process.exit(0); };
+ws.onerror = () => { console.error('WS error'); process.exit(1); };
+setTimeout(() => { console.error('timeout'); process.exit(1); }, 8000);
