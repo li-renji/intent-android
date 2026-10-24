@@ -1385,13 +1385,13 @@ function openSettingDetail(setting) {
             if (slot && slot.dataset.state !== String(snap.modelExists)) {
                 slot.dataset.state = String(snap.modelExists);
                 if (snap.modelExists === false) {
-                    slot.innerHTML = '<button id="download-model-btn" style="padding:8px 14px;border-radius:6px;border:none;background:var(--accent);color:white;cursor:pointer;font-size:var(--fs-sm);">⬇️ 一键下载模型（792MB）</button>';
+                    slot.innerHTML = '<button id="download-model-btn" style="padding:8px 14px;border-radius:6px;border:none;background:var(--accent);color:white;cursor:pointer;font-size:var(--fs-sm);">⬇️ 一键下载模型（868MB）</button>';
                     setTimeout(() => {
                         document.getElementById('download-model-btn')?.addEventListener('click', () => {
                             ModelDownload.start();
                         });
                     }, 50);
-                    set('qd-mon-model-hint', '首次使用需下载本地模型（Qwen2.5-1.5B · MNN，约 792MB）。<br>点击上方按钮即可自动下载，支持断点续传与多镜像加速；下载完成后模型会在手机本地运行，不上传任何数据。');
+                    set('qd-mon-model-hint', '首次使用需下载本地模型（Qwen2.5-1.5B · MNN，约 868MB）。<br>点击上方按钮即可自动下载，支持断点续传与多镜像加速；下载完成后模型会在手机本地运行，不上传任何数据。');
                 } else {
                     slot.innerHTML = fileOk ? '<span style="color:var(--success);font-size:var(--fs-sm);">✓ 文件就绪</span>' : '';
                     set('qd-mon-model-hint', '');
@@ -1598,7 +1598,7 @@ function openSettingDetail(setting) {
                     </div>
                 </div>
                 ${!modelInfo.exists ? `
-                    <button id="download-local-model" style="width:100%;margin-top:8px;padding:8px;border-radius:6px;border:none;background:var(--accent);color:white;cursor:pointer;font-size:var(--fs-sm);">⬇️ 一键下载本地模型（792MB）</button>
+                    <button id="download-local-model" style="width:100%;margin-top:8px;padding:8px;border-radius:6px;border:none;background:var(--accent);color:white;cursor:pointer;font-size:var(--fs-sm);">⬇️ 一键下载本地模型（868MB）</button>
                 ` : ''}
                 <div class="perm-item" style="cursor:pointer;margin-top:8px;" id="model-cloud">
                     <div>

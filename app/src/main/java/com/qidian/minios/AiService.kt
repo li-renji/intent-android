@@ -65,6 +65,31 @@ class AiService(
         val configFile = File(modelDir, "config.json")
         if (!configFile.exists()) { log("config.json 不存在: ${configFile.absolutePath}"); return false }
 
+        // 兼容不同来源的模型包：
+        //   - ModelScope 官方版：tokenizer.txt，config.json 无 tokenizer_file 字段
+        //   - 带 chat_template 的版本：tokenizer.mtok，config.json 显式指定 tokenizer_file
+        // MNN 需要知道用哪个 tokenizer，这里在缺失时自动补齐，避免"下载成功但加载失败"。
+        try {
+            val cfg = org.json.JSONObject(configFile.readText())
+            var changed = false
+            if (!cfg.has("tokenizer_file")) {
+                val tok = when {
+                    File(modelDir, "tokenizer.mtok").exists() -> "tokenizer.mtok"
+                    File(modelDir, "tokenizer.txt").exists() -> "tokenizer.txt"
+                    else -> null
+                }
+                if (tok != null) {
+                    cfg.put("tokenizer_file", tok)
+                    configFile.writeText(cfg.toString())
+                    changed = true
+                    log("config.json 补充 tokenizer_file=$tok")
+                }
+            }
+            if (changed) log("已适配模型包配置")
+        } catch (t: Throwable) {
+            log("config.json 适配跳过: $t")
+        }
+
         log("启动 MNN 推理: dir=${modelDir.name}")
         val t0 = System.currentTimeMillis()
         return try {
