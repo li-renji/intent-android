@@ -372,7 +372,7 @@ class MainActivity : Activity() {
 
             val manifest = catalog.toManifest(entry)
             val modelDir = catalog.modelDir(entry.id)
-            val provisioner = ModelProvisioner(modelDir, manifest) { p ->
+            val provisioner = ModelProvisioner(this@MainActivity, modelDir, manifest) { p ->
                 modelDownloadState = when (p.phase) {
                     ModelProvisioner.Progress.Phase.CHECKING -> "checking"
                     ModelProvisioner.Progress.Phase.DOWNLOADING -> "downloading"
@@ -847,7 +847,7 @@ class MainActivity : Activity() {
                 } else {
                     val manifest = catalog.toManifest(entry)
                     val modelDir = catalog.modelDir(entry.id)
-                    val err = ModelProvisioner(modelDir, manifest) {}.preflight()
+                    val err = ModelProvisioner(activity, modelDir, manifest) {}.preflight()
                     if (err == null) "{\"ok\":true,\"error\":null}"
                     else "{\"ok\":false,\"error\":\"$err\"}"
                 }

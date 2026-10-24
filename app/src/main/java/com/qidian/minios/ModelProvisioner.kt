@@ -24,6 +24,7 @@ import java.util.concurrent.atomic.AtomicLong
  * 清单来自 assets/model_catalog.json（模型商店），运维改版本只改那个文件，不用改代码。
  */
 class ModelProvisioner(
+    private val context: android.content.Context,
     private val modelDir: File,
     private val manifest: ModelManifest,
     private val onProgress: (Progress) -> Unit
@@ -127,17 +128,27 @@ class ModelProvisioner(
         return hasTokenizer
     }
 
-    /** 环境自检：空间、ABI。返回 null 表示可以下载，否则返回给用户看的错误说明。 */
+    /**
+     * 环境自检：架构 / 内存 / 存储。返回 null 表示可以下载，否则返回给用户看的错误说明。
+     *
+     * 内存必须用 ActivityManager.MemoryInfo 拿物理内存：
+     * Runtime.maxMemory() 返回的是当前 JVM 堆上限（通常 256MB），
+     * 不是设备内存 —— 用它判断会把所有正常手机都误判成"内存不足"。
+     */
     fun preflight(): String? {
         // 1) CPU 架构：原生库只有 arm64-v8a
         val abi = android.os.Build.SUPPORTED_ABIS ?: emptyArray()
         if (!abi.contains("arm64-v8a")) {
             return "当前设备架构为 ${abi.joinToString("/")}，本应用仅支持 arm64-v8a（64 位）设备。"
         }
-        // 2) 内存：1.5B 模型 CPU 推理建议 ≥ 3GB
-        val memMb = Runtime.getRuntime().maxMemory() / 1024 / 1024
-        if (memMb < 1536) {
-            return "设备可用内存仅 ${memMb}MB，运行 1.5B 模型建议 2GB 以上内存。"
+        // 2) 物理内存：MNN 加载 1.5B 权重需要约 1GB 常驻内存
+        val totalRamMb = deviceTotalRamMb()
+        val requiredRamMb = manifest.files
+            .firstOrNull { it.path.endsWith(".weight") }
+            ?.let { (it.bytes / 1024 / 1024 * 1.6).toInt() }   // 权重体积 × 1.6 估算运行时占用
+            ?: 1536
+        if (totalRamMb in 1 until requiredRamMb) {
+            return "设备内存 ${totalRamMb}MB，运行该模型（约需 ${requiredRamMb}MB）可能不够。请选择更小的模型。"
         }
         // 3) 存储空间：模型总量 + 根文件系统 + 余量
         val need = manifest.totalBytes + MIN_FREE_SPACE_MARGIN
@@ -147,6 +158,16 @@ class ModelProvisioner(
             return "存储空间不足：需要约 ${need / 1024 / 1024}MB，可用 ${free / 1024 / 1024}MB。请清理空间后重试。"
         }
         return null
+    }
+
+    /** 设备物理内存（MB） */
+    private fun deviceTotalRamMb(): Int = try {
+        val am = context.getSystemService(android.content.Context.ACTIVITY_SERVICE) as android.app.ActivityManager
+        val mi = android.app.ActivityManager.MemoryInfo()
+        am.getMemoryInfo(mi)
+        (mi.totalMem / 1024 / 1024).toInt()
+    } catch (_: Throwable) {
+        4096   // 读不到就放行，别误伤用户
     }
 
     /**

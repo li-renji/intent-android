@@ -304,7 +304,9 @@ class LocalHttpServer(
         // ---- 鉴权：需要 key 的端点（/health、/、8822 保持开放，方便看状态）----
         val protected = path == "/chat" || path == "/api/chat" ||
             path == "/v1/chat/completions" || path == "/v1/models" ||
-            path == "/agent/run"
+            path == "/agent/run" ||
+            // 模型安装/激活/删除有副作用（占空间、切引擎），必须鉴权
+            path == "/model/install" || path == "/model/activate" || path == "/model/delete"
         if (protected && !checkAuth(headers)) {
             writeJson(
                 out, 401,
@@ -344,6 +346,18 @@ class LocalHttpServer(
             path == "/status" -> writeJson(out, 200, healthJson())
             path == "/model/status" -> writeJson(out, 200, modelProvisionJson())
             path == "/model/list" -> writeJson(out, 200, modelCatalogJson())
+            path == "/model/install" -> {
+                if (method != "POST") writeJson(out, 405, """{"ok":false,"error":"method_not_allowed"}""")
+                else handleModelInstall(out, body)
+            }
+            path == "/model/activate" -> {
+                if (method != "POST") writeJson(out, 405, """{"ok":false,"error":"method_not_allowed"}""")
+                else handleModelActivate(out, body)
+            }
+            path == "/model/delete" -> {
+                if (method != "POST") writeJson(out, 405, """{"ok":false,"error":"method_not_allowed"}""")
+                else handleModelDelete(out, body)
+            }
             else -> writeJson(
                 out, 404,
                 """{"ok":false,"error":"not_found","hint":"可用端点：GET /health，GET /，POST /chat，POST /v1/chat/completions（OpenAI 兼容）"}"""
@@ -699,6 +713,75 @@ class LocalHttpServer(
         MainActivity.instance?.modelCatalog()?.snapshotJson() ?: """{"ok":false,"error":"activity unavailable"}"""
     } catch (t: Throwable) {
         """{"ok":false,"error":"${t.message?.replace("\"", "") ?: "unknown"}"}"""
+    }
+
+    /** POST /model/install {"model_id":"xxx"} —— 触发下载（异步） */
+    private fun handleModelInstall(out: OutputStream, body: String) {
+        val id = extractJsonString(body, "model_id") ?: extractJsonString(body, "id")
+        if (id.isNullOrEmpty()) {
+            writeJson(out, 400, """{"ok":false,"error":"缺少 model_id"}""")
+            return
+        }
+        val act = MainActivity.instance
+        if (act == null) {
+            writeJson(out, 503, """{"ok":false,"error":"activity unavailable"}""")
+            return
+        }
+        val catalog = act.modelCatalog()
+        if (catalog.find(id) == null) {
+            writeJson(out, 404, """{"ok":false,"error":"模型不存在: $id"}""")
+            return
+        }
+        if (catalog.isDownloaded(id)) {
+            writeJson(out, 200, """{"ok":true,"started":false,"reason":"already_downloaded"}""")
+            return
+        }
+        Thread {
+            act.provisionModel(java.io.File(act.filesDir, "diag.txt"), id, activate = false)
+        }.apply { name = "model-install-$id"; start() }
+        writeJson(out, 202, """{"ok":true,"started":true,"model_id":"$id"}""")
+    }
+
+    /** POST /model/activate {"model_id":"xxx"} —— 切换当前模型 */
+    private fun handleModelActivate(out: OutputStream, body: String) {
+        val id = extractJsonString(body, "model_id") ?: extractJsonString(body, "id")
+        if (id.isNullOrEmpty()) {
+            writeJson(out, 400, """{"ok":false,"error":"缺少 model_id"}""")
+            return
+        }
+        val act = MainActivity.instance
+        if (act == null) {
+            writeJson(out, 503, """{"ok":false,"error":"activity unavailable"}""")
+            return
+        }
+        val ok = act.activateModel(id)
+        if (ok) writeJson(out, 200, """{"ok":true,"active":"$id"}""")
+        else writeJson(out, 400, """{"ok":false,"error":"切换失败（模型未完整下载？）"}""")
+    }
+
+    /** POST /model/delete {"model_id":"xxx"} —— 删除模型释放空间 */
+    private fun handleModelDelete(out: OutputStream, body: String) {
+        val id = extractJsonString(body, "model_id") ?: extractJsonString(body, "id")
+        if (id.isNullOrEmpty()) {
+            writeJson(out, 400, """{"ok":false,"error":"缺少 model_id"}""")
+            return
+        }
+        val act = MainActivity.instance
+        if (act == null) {
+            writeJson(out, 503, """{"ok":false,"error":"activity unavailable"}""")
+            return
+        }
+        val ok = act.modelCatalog().deleteModel(id)
+        if (ok) writeJson(out, 200, """{"ok":true,"deleted":"$id"}""")
+        else writeJson(out, 400, """{"ok":false,"error":"删除失败（当前使用的模型不能删除）"}""")
+    }
+
+    /** 从 JSON body 里取字符串字段（极简解析，避免为此引入依赖） */
+    private fun extractJsonString(body: String, key: String): String? = try {
+        val m = Regex("\"$key\"\\s*:\\s*\"([^\"]*)\"").find(body)
+        m?.groupValues?.get(1)?.takeIf { it.isNotEmpty() }
+    } catch (_: Throwable) {
+        null
     }
 
     /**

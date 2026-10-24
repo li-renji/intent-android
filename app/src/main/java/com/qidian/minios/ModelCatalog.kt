@@ -160,10 +160,20 @@ class ModelCatalog(private val context: Context) {
             if (id.isNotEmpty() && isDownloaded(id)) return id
         }
         // 回退：默认模型 → 任意已下载模型
-        if (isDownloaded(defaultModelId)) return defaultModelId
-        val any = downloadedIds().firstOrNull()
-        if (any != null) return any
-        return defaultModelId
+        val fallback = when {
+            isDownloaded(defaultModelId) -> defaultModelId
+            else -> downloadedIds().firstOrNull() ?: defaultModelId
+        }
+        // 把解析结果持久化，保证下次启动一致（否则 .active 永远不生成，
+        // 用户切换过模型后重启会退回默认模型）
+        if (fallback.isNotEmpty()) {
+            try {
+                f.parentFile?.mkdirs()
+                f.writeText(fallback)
+            } catch (_: Throwable) {
+            }
+        }
+        return fallback
     }
 
     fun setActiveModel(id: String): Boolean {
