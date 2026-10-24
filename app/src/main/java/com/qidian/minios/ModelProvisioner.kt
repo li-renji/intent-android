@@ -151,9 +151,17 @@ class ModelProvisioner(
             return "设备内存 ${totalRamMb}MB，运行该模型（约需 ${requiredRamMb}MB）可能不够。请选择更小的模型。"
         }
         // 3) 存储空间：模型总量 + 根文件系统 + 余量
+        //    注意：StatFs 要求路径已存在，模型目录可能还没建，
+        //    此时逐级上溯到第一个存在的父目录来查剩余空间。
         val need = manifest.totalBytes + MIN_FREE_SPACE_MARGIN
-        val stat = android.os.StatFs(modelDir.absolutePath)
-        val free = stat.availableBlocksLong * stat.blockSizeLong
+        var statPath: File? = if (modelDir.exists()) modelDir else modelDir.parentFile
+        while (statPath != null && !statPath.exists()) statPath = statPath.parentFile
+        val free = try {
+            val stat = android.os.StatFs((statPath ?: modelDir).absolutePath)
+            stat.availableBlocksLong * stat.blockSizeLong
+        } catch (_: Throwable) {
+            Long.MAX_VALUE   // 查不到就放行
+        }
         if (free < need) {
             return "存储空间不足：需要约 ${need / 1024 / 1024}MB，可用 ${free / 1024 / 1024}MB。请清理空间后重试。"
         }
@@ -175,13 +183,16 @@ class ModelProvisioner(
      * @return 成功返回 null，失败返回错误信息
      */
     fun provision(): String? {
+        // 先建目录再自检：StatFs 要求路径存在，且下载也要目录就绪
+        if (!modelDir.exists() && !modelDir.mkdirs()) {
+            val msg = "无法创建模型目录：${modelDir.absolutePath}"
+            emit(Progress(Progress.Phase.FAILED, "", 0, manifest.files.size, 0, manifest.totalBytes, 0, msg))
+            return msg
+        }
         val err = preflight()
         if (err != null) {
             emit(Progress(Progress.Phase.NO_SPACE, "", 0, manifest.files.size, 0, manifest.totalBytes, 0, err))
             return err
-        }
-        if (!modelDir.exists() && !modelDir.mkdirs()) {
-            return "无法创建模型目录：${modelDir.absolutePath}"
         }
 
         downloadedBytes.set(0)
@@ -316,8 +327,9 @@ class ModelProvisioner(
                     // 每 500ms 上报一次，避免过于频繁
                     if (now - lastEmit >= 500) {
                         lastEmit = now
-                        val elapsed = ((now - t0) / 1000).coerceAtLeast(1)
-                        val speed = (got * 1000) / (now - t0)
+                        // 分母至少为 1ms，否则同一毫秒内会除零
+                        val dt = (now - t0).coerceAtLeast(1L)
+                        val speed = (got * 1000) / dt
                         onTick(got, speed)
                         if (now - sessionStart > 60_000) { sessionStart = now } // 防止长时间连接被断
                     }
