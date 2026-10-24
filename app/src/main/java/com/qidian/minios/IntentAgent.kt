@@ -44,10 +44,16 @@ object IntentAgent {
 
         /** 抓取网页正文文本，供模型阅读具体内容。 */
         fun fetchPage(url: String): String
+
+        /** 把一个新发现的本地模型写入模型商店覆盖清单（无需重打包）。 */
+        fun addModelToStore(json: String): String
     }
 
     @Volatile
     var host: ToolHost? = null
+
+    /** 真实模型名提供器（由 MainActivity 注入，读取当前激活模型，避免写死模型名）。 */
+    var modelNameResolver: (() -> String)? = null
 
     /** INTENT 系统提示词 —— 与 app.js 的 getIntentSystemPrompt() 语义对齐。 */
     fun buildSystemPrompt(extraTools: String = ""): String {
@@ -58,10 +64,11 @@ object IntentAgent {
             now.get(java.util.Calendar.DAY_OF_MONTH), weekdays[now.get(java.util.Calendar.DAY_OF_WEEK) - 1],
             now.get(java.util.Calendar.HOUR_OF_DAY), now.get(java.util.Calendar.MINUTE)
         )
+        val modelName = modelNameResolver?.invoke()?.takeIf { it.isNotBlank() } ?: "本地大语言模型"
         return """你是 INTENT（意图），奇点OS的系统级智能体。
 当前时间：$timeStr
 你运行在：奇点OS mini（安卓APK，proot非root容器，MNN引擎本地推理）
-你的真实模型：Qwen2.5-1.5B-Instruct（千问），不要伪装。
+你的真实模型：$modelName，不要伪装。
 
 【你的能力】
 你不是普通聊天机器人，你可以真正调用工具操作系统：
@@ -146,6 +153,7 @@ $extraTools
                 "searchKB" -> h.searchKB(arg)
                 "searchWeb" -> h.searchWeb(arg)
                 "fetchPage" -> h.fetchPage(arg)
+                "addModelToStore" -> h.addModelToStore(arg)
                 else -> "[错误] 未知工具: $tool"
             }
         } catch (t: Throwable) {

@@ -80,8 +80,7 @@ class LocalHttpServer(
         private const val MAX_LAST_USER_CHARS = 800
     }
 
-    /** MNN 引擎不是线程安全的，所有推理串行化。 */
-    private val inferLock = Any()
+    /** MNN 引擎不是线程安全的，所有推理串行化（与 MainActivity 共用一把锁）。 */
 
     /** 进程内缓存的 API key。 */
     @Volatile private var cachedKey: String? = null
@@ -322,7 +321,9 @@ class LocalHttpServer(
             // 模型安装/激活/删除有副作用（占空间、切引擎），必须鉴权
             path == "/model/install" || path == "/model/activate" || path == "/model/delete" ||
             // 联网搜索/fetch 会对外发请求，有 SSRF 风险，也须鉴权
-            path == "/websearch" || path == "/fetch" || path == "/net"
+            path == "/websearch" || path == "/fetch" || path == "/net" ||
+            // 写覆盖清单有副作用，须鉴权
+            path == "/model/add"
         if (protected && !checkAuth(headers)) {
             writeJson(
                 out, 401,
@@ -374,6 +375,10 @@ class LocalHttpServer(
                 if (method != "POST") writeJson(out, 405, """{"ok":false,"error":"method_not_allowed"}""")
                 else handleModelDelete(out, body)
             }
+            path == "/model/add" -> {
+                if (method != "POST") writeJson(out, 405, """{"ok":false,"error":"method_not_allowed"}""")
+                else handleModelAdd(out, body)
+            }
             path == "/net" -> writeJson(out, 200, netStatusJson())
             path == "/websearch" -> handleWebSearch(out, query)
             path == "/fetch" -> handleFetchPage(out, query)
@@ -423,7 +428,7 @@ class LocalHttpServer(
         }
 
         val reply: String = try {
-            synchronized(inferLock) { ai.inferSync(prompt) ?: "" }
+            synchronized(MainActivity.inferLock) { ai.inferSync(prompt) ?: "" }
         } catch (t: Throwable) {
             errorCount.incrementAndGet()
             writeJson(out, 500, """{"ok":false,"error":"infer_failed","detail":"${escape(t.message ?: "unknown")}"}""")
@@ -542,7 +547,7 @@ class LocalHttpServer(
         }
 
         val reply: String = try {
-            synchronized(inferLock) { ai.inferSync(prompt) ?: "" }
+            synchronized(MainActivity.inferLock) { ai.inferSync(prompt) ?: "" }
         } catch (t: Throwable) {
             errorCount.incrementAndGet()
             writeJson(out, 500, """{"error":{"message":"${escape(t.message ?: "infer_failed")}","type":"server_error"}}""")
@@ -801,6 +806,22 @@ class LocalHttpServer(
         else writeJson(out, 400, """{"ok":false,"error":"删除失败（当前使用的模型不能删除）"}""")
     }
 
+    /** POST /model/add —— 把一个模型写入覆盖清单（本地 AI 发现 / 手动添加）。 */
+    private fun handleModelAdd(out: OutputStream, body: String) {
+        val json = try {
+            val jo = JSONObject(body)
+            when {
+                jo.has("json") -> jo.getString("json")
+                jo.has("model") -> jo.getJSONObject("model").toString()
+                else -> body
+            }
+        } catch (_: Throwable) { body }
+        val res = MainActivity.instance?.modelCatalog()?.appendModel(json)
+            ?: appContext?.let { ModelCatalog(it).appendModel(json) }
+            ?: """{"ok":false,"error":"服务未就绪"}"""
+        writeJson(out, 200, res)
+    }
+
     // ==================== 联网搜索（本地 AI 的上网能力） ====================
 
     /** GET /net —— 设备当前是否真的联网。 */
@@ -921,7 +942,7 @@ class LocalHttpServer(
     private fun indexHtml(): String = """
 <!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>起点OS mini · 本地 AI API</title>
+<title>qidian编辑器 · 本地 AI API</title>
 <style>
 body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;max-width:720px;margin:0 auto;padding:24px;background:#0b0b0d;color:#e8e8ea;line-height:1.65}
 h1{font-size:20px;margin:0 0 4px}h2{font-size:14px;color:#9aa0a6;font-weight:600;margin:24px 0 8px;letter-spacing:.04em}
@@ -931,7 +952,7 @@ code{background:#232327;padding:1px 5px;border-radius:4px;font-size:12.5px;color
 .pill{display:inline-block;padding:2px 8px;border-radius:99px;font-size:12px;background:#1d3a24;color:#7ee2a8;border:1px solid #2c5a38}
 a{color:#7ab7ff}
 </style></head><body>
-<h1>起点OS mini · 本地 AI API</h1>
+<h1>qidian编辑器 · 本地 AI API</h1>
 <div class="pill">运行中 · 模型 $modelName</div>
 <h2>端点</h2>
 <pre>GET  /health                  服务与模型状态（无需 key）

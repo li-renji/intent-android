@@ -43,6 +43,7 @@ class ModelCatalog(private val context: Context) {
     companion object {
         private const val TAG = "ModelCatalog"
         private const val CATALOG_ASSET = "model_catalog.json"
+        private const val OVERRIDE_ASSET = "model_catalog.override.json"
         private const val MODELS_DIR = "models"
         private const val ACTIVE_FILE = "models/.active"
 
@@ -108,7 +109,94 @@ class ModelCatalog(private val context: Context) {
         models = list
     }
 
-    fun find(id: String): ModelEntry? = models.firstOrNull { it.id == id }
+    fun find(id: String): ModelEntry? = allModels().firstOrNull { it.id == id }
+
+    /**
+     * 读取「覆盖清单」files/model_catalog.override.json（用户/本地 AI 添加、无需重打包）。
+     * 不存在或损坏时返回空列表。
+     */
+    private fun overrideList(): List<ModelEntry> {
+        val f = File(context.filesDir, OVERRIDE_ASSET)
+        if (!f.exists()) return emptyList()
+        return try {
+            parse(f.readText()).second
+        } catch (t: Throwable) {
+            Log.w(TAG, "覆盖清单解析失败: $t")
+            emptyList()
+        }
+    }
+
+    /**
+     * 合并：内置清单 + 覆盖清单（覆盖清单按 id 优先，新 id 追加在末尾）。
+     * 覆盖清单每次调用即时读取，保证「加完立刻在商店出现」无需重启/重打包。
+     */
+    fun allModels(): List<ModelEntry> {
+        val over = overrideList()
+        if (over.isEmpty()) return models
+        val byId = models.associateBy { it.id }.toMutableMap()
+        for (m in over) byId[m.id] = m
+        return byId.values.toList()
+    }
+
+    /** 覆盖清单里的 id 集合（用于商店标记「新」）。 */
+    fun overrideIds(): Set<String> = overrideList().map { it.id }.toSet()
+
+    /**
+     * 把一个新模型追加/更新进覆盖清单。json 是单个模型的 JSON 对象字符串。
+     * 返回标准 JSON 结果串。
+     */
+    fun appendModel(json: String): String {
+        val newEntry = try {
+            parse("{\"models\":[$json]}").second.firstOrNull()
+        } catch (t: Throwable) {
+            null
+        } ?: return "{\"ok\":false,\"error\":\"模型 JSON 解析失败\"}"
+
+        val f = File(context.filesDir, OVERRIDE_ASSET)
+        val existing = if (f.exists()) {
+            try { parse(f.readText()).second.toMutableList() } catch (_: Throwable) { mutableListOf() }
+        } else {
+            mutableListOf()
+        }
+        val idx = existing.indexOfFirst { it.id == newEntry.id }
+        if (idx >= 0) existing[idx] = newEntry else existing.add(newEntry)
+
+        val arr = org.json.JSONArray()
+        for (m in existing) arr.put(entryToJson(m))
+        val obj = org.json.JSONObject().apply {
+            put("default_model", "")
+            put("models", arr)
+        }
+        try {
+            f.writeText(obj.toString())
+        } catch (t: Throwable) {
+            return "{\"ok\":false,\"error\":\"写入覆盖清单失败: ${t.message}\"}"
+        }
+        return "{\"ok\":true,\"id\":\"${newEntry.id}\"}"
+    }
+
+    private fun entryToJson(m: ModelEntry): org.json.JSONObject =
+        org.json.JSONObject().apply {
+            put("id", m.id)
+            put("name", m.name)
+            put("desc", m.desc)
+            put("params", m.params)
+            put("repo", m.repo)
+            put("tags", org.json.JSONArray(m.tags))
+            put("min_ram_mb", m.minRamMb)
+            put("recommended", m.recommended)
+            put("mirrors", org.json.JSONArray(m.mirrors))
+            put("total_bytes", m.totalBytes)
+            val fa = org.json.JSONArray()
+            for (f in m.files) {
+                fa.put(org.json.JSONObject().apply {
+                    put("path", f.path)
+                    put("bytes", f.bytes)
+                    put("sha256", f.sha256)
+                })
+            }
+            put("files", fa)
+        }
 
     /** 已下载且完整的模型 id 集合 */
     fun downloadedIds(): Set<String> =
@@ -200,8 +288,9 @@ class ModelCatalog(private val context: Context) {
     /** 汇总商店状态，供 UI / HTTP 查询 */
     fun snapshotJson(): String {
         val active = activeModelId()
+        val overrideSet = overrideIds()
         val arr = JSONArray()
-        for (m in models) {
+        for (m in allModels()) {
             val downloaded = isDownloaded(m.id)
             arr.put(
                 JSONObject().apply {
@@ -215,6 +304,7 @@ class ModelCatalog(private val context: Context) {
                     put("size_mb", m.totalBytes / 1024 / 1024)
                     put("downloaded", downloaded)
                     put("active", m.id == active)
+                    put("override", overrideSet.contains(m.id))
                     put("local_mb", if (downloaded) downloadedSize(m.id) / 1024 / 1024 else 0)
                 }
             )

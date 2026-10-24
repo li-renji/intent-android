@@ -564,6 +564,125 @@
       "mirrors": [
         "https://www.modelscope.cn/models/MNN/Qwen3-8B-MNN/resolve/master"
       ]
+    },
+    {
+      "id": "qwen2.5-14b-mnn",
+      "name": "Qwen2.5-14B Instruct",
+      "desc": "通义千问 2.5 14B 指令模型（MNN 4-bit），能力强、适合复杂任务，需较大内存",
+      "params": "14B",
+      "repo": "MNN/Qwen2.5-14B-Instruct-MNN",
+      "tags": ["通用", "大模型"],
+      "min_ram_mb": 9000,
+      "recommended": false,
+      "mirrors": ["https://www.modelscope.cn/models/MNN/Qwen2.5-14B-Instruct-MNN/resolve/master"],
+      "files": [
+        {"path": "config.json", "bytes": 0, "sha256": ""},
+        {"path": "llm.mnn.weight", "bytes": 0, "sha256": ""},
+        {"path": "tokenizer.txt", "bytes": 0, "sha256": ""}
+      ],
+      "total_bytes": 0
+    },
+    {
+      "id": "qwen2.5-32b-mnn",
+      "name": "Qwen2.5-32B Instruct",
+      "desc": "通义千问 2.5 32B 指令模型（MNN 4-bit），旗舰级能力，需 16GB+ 内存",
+      "params": "32B",
+      "repo": "MNN/Qwen2.5-32B-Instruct-MNN",
+      "tags": ["通用", "大模型"],
+      "min_ram_mb": 18000,
+      "recommended": false,
+      "mirrors": ["https://www.modelscope.cn/models/MNN/Qwen2.5-32B-Instruct-MNN/resolve/master"],
+      "files": [
+        {"path": "config.json", "bytes": 0, "sha256": ""},
+        {"path": "llm.mnn.weight", "bytes": 0, "sha256": ""},
+        {"path": "tokenizer.txt", "bytes": 0, "sha256": ""}
+      ],
+      "total_bytes": 0
+    },
+    {
+      "id": "qwen3-14b-mnn",
+      "name": "Qwen3-14B",
+      "desc": "通义千问 3 代 14B（MNN 4-bit），更强推理与多语言，需较大内存",
+      "params": "14B",
+      "repo": "MNN/Qwen3-14B-MNN",
+      "tags": ["通用", "大模型"],
+      "min_ram_mb": 9000,
+      "recommended": false,
+      "mirrors": ["https://www.modelscope.cn/models/MNN/Qwen3-14B-MNN/resolve/master"],
+      "files": [
+        {"path": "config.json", "bytes": 0, "sha256": ""},
+        {"path": "llm.mnn.weight", "bytes": 0, "sha256": ""},
+        {"path": "tokenizer.txt", "bytes": 0, "sha256": ""}
+      ],
+      "total_bytes": 0
+    },
+    {
+      "id": "qwen3-32b-mnn",
+      "name": "Qwen3-32B",
+      "desc": "通义千问 3 代 32B（MNN 4-bit），旗舰级能力，需 16GB+ 内存",
+      "params": "32B",
+      "repo": "MNN/Qwen3-32B-MNN",
+      "tags": ["通用", "大模型"],
+      "min_ram_mb": 18000,
+      "recommended": false,
+      "mirrors": ["https://www.modelscope.cn/models/MNN/Qwen3-32B-MNN/resolve/master"],
+      "files": [
+        {"path": "config.json", "bytes": 0, "sha256": ""},
+        {"path": "llm.mnn.weight", "bytes": 0, "sha256": ""},
+        {"path": "tokenizer.txt", "bytes": 0, "sha256": ""}
+      ],
+      "total_bytes": 0
+    },
+    {
+      "id": "qwen2.5-coder-7b-mnn",
+      "name": "Qwen2.5-Coder 7B",
+      "desc": "通义千问 2.5 代码专用 7B（MNN 4-bit），编程与补全能力强",
+      "params": "7B",
+      "repo": "MNN/Qwen2.5-Coder-7B-MNN",
+      "tags": ["代码", "编程"],
+      "min_ram_mb": 5000,
+      "recommended": false,
+      "mirrors": ["https://www.modelscope.cn/models/MNN/Qwen2.5-Coder-7B-MNN/resolve/master"],
+      "files": [
+        {"path": "config.json", "bytes": 0, "sha256": ""},
+        {"path": "llm.mnn.weight", "bytes": 0, "sha256": ""},
+        {"path": "tokenizer.txt", "bytes": 0, "sha256": ""}
+      ],
+      "total_bytes": 0
+    },
+    {
+      "id": "gemma-2-9b-mnn",
+      "name": "Gemma 2 9B",
+      "desc": "谷歌 Gemma 2 9B（MNN 4-bit），英文与多语言优秀，需 6GB+ 内存",
+      "params": "9B",
+      "repo": "MNN/gemma-2-9b-it-MNN",
+      "tags": ["通用", "英文"],
+      "min_ram_mb": 6000,
+      "recommended": false,
+      "mirrors": ["https://www.modelscope.cn/models/MNN/gemma-2-9b-it-MNN/resolve/master"],
+      "files": [
+        {"path": "config.json", "bytes": 0, "sha256": ""},
+        {"path": "llm.mnn.weight", "bytes": 0, "sha256": ""},
+        {"path": "tokenizer.txt", "bytes": 0, "sha256": ""}
+      ],
+      "total_bytes": 0
+    },
+    {
+      "id": "llama-3.1-8b-mnn",
+      "name": "Llama 3.1 8B Instruct",
+      "desc": "Meta Llama 3.1 8B 指令模型（MNN 4-bit），英文与多语言均衡",
+      "params": "8B",
+      "repo": "MNN/Llama-3.1-8B-Instruct-MNN",
+      "tags": ["通用", "英文"],
+      "min_ram_mb": 5500,
+      "recommended": false,
+      "mirrors": ["https://www.modelscope.cn/models/MNN/Llama-3.1-8B-Instruct-MNN/resolve/master"],
+      "files": [
+        {"path": "config.json", "bytes": 0, "sha256": ""},
+        {"path": "llm.mnn.weight", "bytes": 0, "sha256": ""},
+        {"path": "tokenizer.txt", "bytes": 0, "sha256": ""}
+      ],
+      "total_bytes": 0
     }
   ]
 }

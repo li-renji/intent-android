@@ -519,11 +519,15 @@ const ModelStore = {
                 action = `<button data-act="download" data-id="${m.id}" style="padding:6px 12px;border-radius:6px;border:none;background:var(--accent);color:white;cursor:pointer;font-size:var(--fs-sm);">下载</button>${memWarn}`;
             }
 
+            const newBadge = m.override
+                ? ' <span style="display:inline-block;padding:1px 6px;border-radius:4px;font-size:11px;margin-left:4px;background:var(--accent);color:#fff;vertical-align:middle;">·新</span>'
+                : '';
+
             return `
             <div class="perm-item" style="flex-direction:column;align-items:stretch;gap:6px;padding:12px 0;border-bottom:1px solid var(--border);">
                 <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
                     <div style="flex:1;min-width:0;">
-                        <div class="perm-name">${m.name} ${tags}</div>
+                        <div class="perm-name">${m.name}${newBadge} ${tags}</div>
                         <div class="perm-desc" style="margin-top:3px;">${m.desc || ''}</div>
                         <div style="color:var(--text-secondary);font-size:var(--fs-sm);margin-top:3px;">
                             ${m.params} · ${this.fmtMB(m.size_mb)}
@@ -1742,6 +1746,9 @@ function openSettingDetail(setting, target) {
                     模型在手机本地运行，不上传任何数据。可同时下载多款，按需切换使用。
                     当前使用中的模型会标记为「使用中」。
                 </p>
+                <button id="discover-models-btn" style="width:100%;padding:10px;border-radius:8px;border:1px solid var(--accent);background:transparent;color:var(--accent);cursor:pointer;font-size:var(--fs-sm);margin-bottom:14px;">
+                    🔍 立即发现新模型
+                </button>
                 <div id="model-store-list"></div>
                 <div id="model-store-progress" style="margin-top:14px;"></div>
             </div>
@@ -1750,6 +1757,22 @@ function openSettingDetail(setting, target) {
             ModelStore.bind();
             ModelStore.load();
             ModelStore.render();
+            // 「立即发现新模型」：触发本地 AI 后台联网检索并自动加店
+            const discBtn = document.getElementById('discover-models-btn');
+            discBtn?.addEventListener('click', () => {
+                if (!window.Qidian || !Qidian.runModelDiscovery) {
+                    alert('当前版本暂不支持自动发现，请更新应用后再试。');
+                    return;
+                }
+                discBtn.disabled = true;
+                discBtn.textContent = '⏳ 正在后台检索新模型…';
+                Qidian.runModelDiscovery();
+                setTimeout(() => {
+                    discBtn.disabled = false;
+                    discBtn.textContent = '🔍 立即发现新模型';
+                }, 4000);
+                alert('已启动后台模型检索：本地 AI 会联网查找当前可运行的 MNN 模型并自动加入商店。发现的新模型会标「·新」，稍后下拉刷新即可看到。');
+            });
             // 把下载进度挂到商店页
             const holder = document.getElementById('model-store-progress');
             const origRender = ModelDownload.render.bind(ModelDownload);

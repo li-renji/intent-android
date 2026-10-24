@@ -13,7 +13,7 @@ import java.io.File
 import java.io.FileInputStream
 
 /**
- * 起点OS mini —— WebView 壳 + AI 可修改界面。
+ * qidian编辑器 —— WebView 壳 + AI 可修改界面。
  *
  * 界面不打包在 APK 里，放在 files/ui/ 目录（HTML/CSS/JS 纯文本）。
  * AI 可以直接修改这些文件，WebView 实时刷新，用户立即看到效果，无需重装。
@@ -79,6 +79,28 @@ class MainActivity : Activity() {
         var castResultCodeGlobal = 0
         @Volatile
         var castDataGlobal: Intent? = null
+
+        /** 推理全局锁：HTTP API 与自动发现共用，避免 MNN 会话并发冲突。 */
+        val inferLock = Any()
+
+        /** 自动发现时注入给 agent 的额外工具说明（仅发现任务暴露 addModelToStore）。 */
+        private const val DISCOVERY_TOOLS = """
+- addModelToStore|JSON → 把一个新发现的本地模型加入模型商店。JSON 字段：
+  id(唯一英文小写id，如 qwen2.5-14b-mnn)、name(显示名)、desc(一句话简介)、
+  params(如 "14B")、repo(模型仓库基URL，可空)、tags(字符串数组)、
+  min_ram_mb(整数，如 8000)、mirrors(下载基URL数组，例如
+  "https://huggingface.co/mnn-llm/qwen2.5-14b-instruct-mnn/resolve/main")、
+  files(文件清单数组，每项 {"path":"config.json"} 等，至少包含
+  config.json、llm.mnn.weight、tokenizer.txt 三个)。
+  只加你联网核实过确实存在且有下载地址的模型，不要编造；一次调用只加一个模型。"""
+
+        /** 自动发现任务提示词。 */
+        private const val DISCOVERY_PROMPT = """你是模型发现助手。请联网搜索当前可在手机端 MNN 引擎本地运行的大语言模型，
+重点查找 HuggingFace 上 mnn-llm 组织的模型（如 Qwen2.5 / Qwen3 / Llama / Gemma 等系列的
+对话与代码模型，覆盖 0.5B 到 30B+ 各种尺寸），以及其它社区维护的 MNN 模型。
+对每个你确认存在、能从镜像源下载的模型，调用一次 addModelToStore 把它加入商店，
+最多添加 12 个、优先补充本机商店还没有的大尺寸/新模型。不要添加你已经加过的重复 id。
+若搜索不到可靠下载地址，就跳过该模型，不要编造。最后用【回答】简要汇报你添加了哪些模型。"""
     }
 
     lateinit var webView: WebView
@@ -98,6 +120,11 @@ class MainActivity : Activity() {
 
         // 注册意图 Agent 的工具宿主：让外部 agent 能通过 HTTP 驱动手机执行任务
         registerToolHost()
+
+        // 让 Kotlin 侧 agent 也能动态拿到真实模型名（避免写死 1.5B）
+        IntentAgent.modelNameResolver = {
+            modelCatalog().let { c -> val id = c.activeModelId(); c.find(id)?.name ?: id }
+        }
 
         // 联网搜索模块需要 Context 判断网络状态
         WebSearch.attach(applicationContext)
@@ -133,6 +160,9 @@ class MainActivity : Activity() {
             containerStarted = true
             startContainerInBackground()
         }
+
+        // 启动后按需触发每周一次的本地 AI 模型自动发现
+        maybeRunWeeklyDiscovery()
     }
 
     /**
@@ -450,6 +480,48 @@ class MainActivity : Activity() {
 
     /** 模型商店实例（进程级，不随 Activity 销毁而失效） */
     internal fun modelCatalog(): ModelCatalog = modelCatalogOf(this)
+
+    // ===== 模型商店覆盖清单 / 自动发现 =====
+
+    /** 把一个模型写入覆盖清单（files/model_catalog.override.json）。 */
+    internal fun addModelToStoreInternal(json: String): String = modelCatalog().appendModel(json)
+
+    /** 本地 AI 自动发现模型：联网搜索当前可用的 MNN 本地模型并加入商店。 */
+    internal fun runModelDiscovery() {
+        val ai = aiService
+        if (ai == null) {
+            Log.w(TAG, "模型发现跳过：AI 引擎未就绪")
+            return
+        }
+        val prompt = DISCOVERY_PROMPT
+        Thread({
+            try {
+                val res = IntentAgent.run(
+                    prompt,
+                    infer = { p -> synchronized(inferLock) { ai.inferSync(p) ?: "" } },
+                    maxRounds = 10,
+                    timeBudgetMs = 180_000L,
+                    extraSystem = DISCOVERY_TOOLS
+                )
+                Log.i(TAG, "模型发现完成: ${res["answer"]}")
+                getSharedPreferences("discovery", MODE_PRIVATE)
+                    .edit().putLong("last_run", System.currentTimeMillis()).apply()
+            } catch (t: Throwable) {
+                Log.e(TAG, "模型发现异常", t)
+            }
+        }, "model-discovery").start()
+    }
+
+    /** 启动后按需触发每周一次的自动发现（已超 7 天则立即跑）。 */
+    private fun maybeRunWeeklyDiscovery() {
+        val prefs = getSharedPreferences("discovery", MODE_PRIVATE)
+        val last = prefs.getLong("last_run", 0L)
+        val weekMs = 7L * 24 * 60 * 60 * 1000
+        if (System.currentTimeMillis() - last >= weekMs) {
+            Log.i(TAG, "距上次模型发现已超一周，触发自动发现")
+            runModelDiscovery()
+        }
+    }
 
     /**
      * 切换当前使用的本地模型：重启 AI 引擎加载新模型。
@@ -940,6 +1012,23 @@ class MainActivity : Activity() {
             } catch (t: Throwable) {
                 "{\"ok\":false,\"error\":\"${t.message}\"}"
             }
+        }
+
+        /** 把模型加入商店覆盖清单（本地 AI 发现模型时调用，也支持手动添加）。 */
+        @JavascriptInterface
+        fun addModelToStore(json: String): String = try {
+            activity.addModelToStoreInternal(json)
+        } catch (t: Throwable) {
+            "{\"ok\":false,\"error\":\"${t.message}\"}"
+        }
+
+        /** 立即让本地 AI 联网发现可用模型并加入商店（每周也会自动跑一次）。 */
+        @JavascriptInterface
+        fun runModelDiscovery(): String = try {
+            activity.runModelDiscovery()
+            "{\"ok\":true}"
+        } catch (t: Throwable) {
+            "{\"ok\":false,\"error\":\"${t.message}\"}"
         }
 
         // ===== 联网搜索 =====
