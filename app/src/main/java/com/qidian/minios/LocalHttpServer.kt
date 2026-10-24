@@ -293,7 +293,8 @@ class LocalHttpServer(
 
         // ---- 鉴权：需要 key 的端点（/health、/、8822 保持开放，方便看状态）----
         val protected = path == "/chat" || path == "/api/chat" ||
-            path == "/v1/chat/completions" || path == "/v1/models"
+            path == "/v1/chat/completions" || path == "/v1/models" ||
+            path == "/agent/run"
         if (protected && !checkAuth(headers)) {
             writeJson(
                 out, 401,
@@ -306,6 +307,13 @@ class LocalHttpServer(
             path == "/health" && (method == "GET" || method == "HEAD") -> writeJson(out, 200, healthJson())
             path == "/" && method == "GET" -> writeHtml(out, 200, indexHtml())
             path == "/v1/models" && method == "GET" -> writeJson(out, 200, modelsJson())
+            path == "/agent/run" -> {
+                if (method != "POST") {
+                    writeJson(out, 405, """{"error":{"message":"use POST","type":"invalid_request_error"}}""")
+                } else {
+                    handleAgentRun(out, body)
+                }
+            }
             path == "/v1/chat/completions" -> {
                 if (method != "POST") {
                     writeJson(out, 405, """{"error":{"message":"use POST","type":"invalid_request_error"}}""")
@@ -405,14 +413,31 @@ class LocalHttpServer(
 
         var stream = false
         val messages = ArrayList<Pair<String, String>>()
+        var toolsArr: org.json.JSONArray? = null
         try {
             val jo = JSONObject(body.trim())
             stream = jo.optBoolean("stream", false)
+            toolsArr = jo.optJSONArray("tools")
             val arr = jo.optJSONArray("messages")
             if (arr != null) {
                 for (i in 0 until arr.length()) {
                     val m = arr.optJSONObject(i) ?: continue
-                    messages.add(Pair(m.optString("role", "user"), m.optString("content", "")))
+                    val role = m.optString("role", "user")
+                    val content = m.optString("content", "")
+                    messages.add(Pair(role, content))
+                    // 上一轮 assistant 的 tool_calls：还原成 DSL，模型才能接着往下想
+                    val tcs = m.optJSONArray("tool_calls")
+                    if (tcs != null && tcs.length() > 0) {
+                        val fn = tcs.optJSONObject(0)?.optJSONObject("function")
+                        val fname = fn?.optString("name").orEmpty()
+                        val fargs = fn?.optString("arguments").orEmpty()
+                        val argText = try {
+                            val ao = JSONObject(fargs)
+                            val keys = ao.keys()
+                            if (keys.hasNext()) "${keys.next()}=${ao.optString(keys.next())}" else ""
+                        } catch (e: Throwable) { "" }
+                        messages.add(Pair("assistant_tool", "【工具】$fname|$argText"))
+                    }
                 }
             }
         } catch (t: Throwable) {
@@ -428,19 +453,30 @@ class LocalHttpServer(
         // 按消息粒度裁剪：本地小模型上下文有限，且 MNN 在 prompt 超长时会原生崩溃。
         // 策略：system 保留开头（规则），最后一条 user 保留结尾（当前问题），
         // 中间历史只留少量，避免把预算浪费在冗长系统提示词上。
+        val toolMode = toolsArr != null && toolsArr!!.length() > 0
         val systemMsg = messages.firstOrNull { it.first == "system" }
         val userMsgs = messages.filter { it.first == "user" }
         val lastUser = userMsgs.lastOrNull()
-        val history = messages.filter { it.first == "assistant" }.takeLast(2)
+        val history = messages.filter { it.first == "assistant" || it.first == "assistant_tool" }.takeLast(3)
 
-        systemMsg?.let { (role, content) ->
-            val head = content.take(MAX_SYSTEM_CHARS)
-            promptSb.append("[系统] ").append(head)
-            if (content.length > MAX_SYSTEM_CHARS) promptSb.append("…（已精简）")
-            promptSb.append('\n')
+        if (toolMode) {
+            // 工具模式：用项目原有的 INTENT DSL（小模型对「一行 DSL」远比对 JSON function calling 友好）
+            promptSb.append(toolModeSystemPrompt(toolsArr!!)).append('\n')
+        } else {
+            systemMsg?.let { (role, content) ->
+                val head = content.take(MAX_SYSTEM_CHARS)
+                promptSb.append("[系统] ").append(head)
+                if (content.length > MAX_SYSTEM_CHARS) promptSb.append("…（已精简）")
+                promptSb.append('\n')
+            }
         }
         history.forEach { (role, content) ->
-            promptSb.append("[助手] ").append(content.take(MAX_HISTORY_CHARS)).append('\n')
+            if (role == "assistant_tool") promptSb.append(content).append('\n')
+            else promptSb.append("[助手] ").append(content.take(MAX_HISTORY_CHARS)).append('\n')
+        }
+        // 上一步工具的执行结果
+        messages.filter { it.first == "tool" }.takeLast(2).forEach { (_, content) ->
+            promptSb.append("[观察] ").append(content.take(MAX_HISTORY_CHARS)).append('\n')
         }
         userMsgs.dropLast(1).takeLast(1).forEach { (_, content) ->
             promptSb.append("[用户] ").append(content.take(MAX_HISTORY_CHARS)).append('\n')
@@ -474,6 +510,32 @@ class LocalHttpServer(
 
         val id = "chatcmpl-" + java.util.UUID.randomUUID().toString().replace("-", "").take(20)
         val created = System.currentTimeMillis() / 1000
+
+        if (toolMode) {
+            // 工具模式：模型若给出【工具】xxx|yyy，就翻译成标准 OpenAI tool_calls，
+            // 由调用方（WorkBuddy / 奇点Agent）执行工具并回传结果，形成闭环。
+            val call = IntentAgent.parseToolCall(reply)
+            if (call != null) {
+                val parts = call.split("|")
+                val fname = parts[0].trim()
+                val farg = parts.drop(1).joinToString("|").trim()
+                val paramName = firstParamName(toolsArr!!, fname)
+                val argsJson = JSONObject().put(paramName, farg).toString()
+                val callId = "call_" + java.util.UUID.randomUUID().toString().replace("-", "").take(16)
+                Log.i(TAG, "tool_call: $fname($paramName=$farg)")
+                writeJson(
+                    out, 200,
+                    """{"id":"$id","object":"chat.completion","created":$created,"model":"$modelName","choices":[{"index":0,"message":{"role":"assistant","content":null,"tool_calls":[{"id":"$callId","type":"function","function":{"name":${JSONObject.quote(fname)},"arguments":${JSONObject.quote(argsJson)}}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0}}"""
+                )
+                return
+            }
+            val answer = IntentAgent.parseAnswer(reply)
+            writeJson(
+                out, 200,
+                """{"id":"$id","object":"chat.completion","created":$created,"model":"$modelName","choices":[{"index":0,"message":{"role":"assistant","content":${JSONObject.quote(answer)}},"finish_reason":"stop"}],"usage":{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0}}"""
+            )
+            return
+        }
 
         if (!stream) {
             writeJson(
@@ -664,4 +726,96 @@ curl -X POST http://${localIp()}:$boundHttpPort/v1/chat/completions \\
 <p style="color:#8b9096;font-size:12.5px">App 退到后台不影响服务；进程被杀后重新打开 App 即自动恢复。</p>
 </body></html>
 """.trimIndent()
+
+    // ==================== 工具模式（tool_calls 桥接） ====================
+
+    /**
+     * 把调用方给的 OpenAI tools schema 转成小模型友好的 DSL 提示。
+     *
+     * 1.5B 模型写 JSON function calling 极不可靠，但「工具名|参数」这种一行格式
+     * 命中率很高（项目自己的 INTENT agent 就是这么用的）。
+     */
+    private fun toolModeSystemPrompt(tools: org.json.JSONArray): String {
+        val sb = StringBuilder()
+        sb.append("你是奇点OS的本地助手，可以调用工具来完成任务。\n")
+        sb.append("【可用工具】需要调用工具时，严格用一行输出：工具名|参数\n")
+        for (i in 0 until tools.length()) {
+            val t = tools.optJSONObject(i) ?: continue
+            val fn = t.optJSONObject("function") ?: continue
+            val name = fn.optString("name")
+            val desc = fn.optString("description")
+            val param = firstParamName(tools, name)
+            sb.append("- ").append(name)
+            if (param.isNotEmpty()) sb.append("|").append(param)
+            if (desc.isNotEmpty()) sb.append("（").append(desc.take(60)).append("）")
+            sb.append('\n')
+        }
+        sb.append("""
+【输出格式】严格遵守：
+【思考】你要做什么
+【工具】工具名|参数（需要调用工具时才写这一行）
+【回答】给用户的最终回答（不需要再调工具时写这一行）
+""".trimIndent())
+        return sb.toString()
+    }
+
+    /** 取某个工具 schema 里第一个参数的属性名（作为 DSL 参数名的映射目标）。 */
+    private fun firstParamName(tools: org.json.JSONArray, fname: String): String {
+        for (i in 0 until tools.length()) {
+            val t = tools.optJSONObject(i) ?: continue
+            val fn = t.optJSONObject("function") ?: continue
+            if (fn.optString("name") != fname) continue
+            val props = fn.optJSONObject("parameters")?.optJSONObject("properties") ?: return ""
+            val keys = props.keys()
+            return if (keys.hasNext()) keys.next() else ""
+        }
+        return ""
+    }
+
+    // ==================== 手机端 Agent（自执行任务） ====================
+
+    /**
+     * POST /agent/run —— 让手机自己的意图 Agent 执行任务。
+     *
+     * 与 /v1/chat/completions 的区别：那个只做单次推理返回文本；
+     * 这个在手机内部跑完整循环（思考 → 调工具 → 观察 → 继续 → 回答），
+     * 工具全部在手机上就地执行（容器命令 / 改界面 / 启动 App / 查知识库）。
+     */
+    private fun handleAgentRun(out: OutputStream, body: String) {
+        val t0 = System.currentTimeMillis()
+        var prompt = ""
+        var rounds = 5
+        try {
+            val jo = JSONObject(body.trim())
+            prompt = jo.optString("prompt", "")
+                .ifBlank { jo.optString("message", "") }
+                .ifBlank { jo.optString("task", "") }
+            rounds = jo.optInt("rounds", 5).coerceIn(1, 8)
+        } catch (t: Throwable) {
+            writeJson(out, 400, """{"ok":false,"error":"bad_json","hint":"body 需要是 {\"prompt\":\"要执行的任务\"}"}""")
+            return
+        }
+        if (prompt.isBlank()) {
+            writeJson(out, 400, """{"ok":false,"error":"empty_prompt","hint":"请提供 prompt 字段"}""")
+            return
+        }
+        val ai = aiProvider()
+        if (ai == null) {
+            writeJson(out, 503, """{"ok":false,"error":"model_loading","hint":"本地模型正在加载，请稍后重试"}""")
+            return
+        }
+        val res = IntentAgent.run(
+            prompt,
+            infer = { p -> ai.inferSync(p) ?: "" },
+            maxRounds = rounds
+        )
+        chatCount.incrementAndGet()
+        val jo = JSONObject()
+        jo.put("ok", true)
+        jo.put("answer", res["answer"] ?: "")
+        jo.put("rounds", res["rounds"] ?: 0)
+        jo.put("ms", System.currentTimeMillis() - t0)
+        jo.put("trace", org.json.JSONArray(res["trace"] as? List<*> ?: emptyList<Any>()))
+        writeJson(out, 200, jo.toString())
+    }
 }

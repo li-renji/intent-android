@@ -70,6 +70,9 @@ class MainActivity : Activity() {
         // 也不依赖 WebView 轮询，所以容器卡死/没起来时它照样能用。
         startHttpApi()
 
+        // 注册意图 Agent 的工具宿主：让外部 agent 能通过 HTTP 驱动手机执行任务
+        registerToolHost()
+
         // 系统背景纯黑
         window.decorView.setBackgroundColor(android.graphics.Color.BLACK)
 
@@ -199,6 +202,58 @@ class MainActivity : Activity() {
 
         // 暴露 JS 接口
         webView.addJavascriptInterface(QidianJSInterface(this), "Qidian")
+    }
+
+    /**
+     * 注册意图 Agent 的工具宿主。
+     *
+     * 这样 HTTP API 的 /agent/run 和 tool_calls 桥接就能真正驱动手机做事
+     * （容器命令 / 改界面 / 启动 App / 查知识库），而不只是返回一段文本。
+     */
+    private fun registerToolHost() {
+        IntentAgent.host = object : IntentAgent.ToolHost {
+            override fun exec(cmd: String): String = execInContainer(cmd)
+
+            override fun readUI(name: String): String = try {
+                val safe = name.replace("..", "").trimStart('/')
+                val f = File(filesDir, "ui/$safe")
+                if (f.exists()) f.readText() else ""
+            } catch (e: Exception) {
+                ""
+            }
+
+            override fun writeUI(name: String, content: String): String = try {
+                val uiDir = File(filesDir, "ui")
+                uiDir.mkdirs()
+                val safe = name.replace("..", "").trimStart('/')
+                val f = File(uiDir, safe)
+                f.parentFile?.mkdirs()
+                f.writeText(content)
+                runOnUiThread { webView.reload() }
+                "界面文件 $safe 已更新并刷新"
+            } catch (e: Exception) {
+                "[错误] 写入界面文件失败: ${e.message}"
+            }
+
+            override fun launchApp(packageName: String): String = try {
+                val i = packageManager.getLaunchIntentForPackage(packageName)
+                if (i != null) {
+                    i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    startActivity(i)
+                    "已启动: $packageName"
+                } else {
+                    "未找到应用: $packageName"
+                }
+            } catch (e: Exception) {
+                "启动失败: ${e.message}"
+            }
+
+            override fun status(): String =
+                "{\"container\":$containerReady,\"ai\":${aiService != null}}"
+
+            override fun searchKB(keyword: String): String =
+                execInContainer("grep -n -i -- \"$keyword\" '/系统/功能.qd/知识库.qd/知识库.qdai' | head -20")
+        }
     }
 
     /** 从 assets/ui/ 复制默认界面到 files/ui/ */
