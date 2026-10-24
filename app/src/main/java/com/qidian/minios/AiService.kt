@@ -21,6 +21,31 @@ class AiService(
 ) {
     companion object {
         private const val TAG = "AiService"
+
+        /**
+         * 送进 MNN 的 prompt 字符数上限。
+         *
+         * 为什么必须限：MNN 的 LLM 会按 prompt 长度申请输入缓冲，超过模型
+         * max_seq_len 后内部越界 —— 直接 SIGSEGV，整个 App 闪退（原生崩溃，
+         * Java 层 try/catch 根本拦不住）。
+         * 实测 vivo V2303A / qwen2.5-1.5b-mnn：
+         *   2496 字符 → 正常（10.8s）
+         *   4976 字符 → 闪退（连接被重置，App 被系统重启）
+         * 同时 prefill 耗时与长度线性相关（约 4.4ms/字符），过长既慢又危险。
+         */
+        const val MAX_PROMPT_CHARS = 1800
+
+        /**
+         * MNN 推理的全局锁。
+         *
+         * 为什么必须全局串行：MNN 的 Llm 内部共享 KV cache 与输入缓冲，
+         * 不是线程安全的 —— 两个线程同时调用 response() 会踩内存直接 SIGSEGV，
+         * Java 层 try/catch 拦不住，整个 App 闪退。
+         * 历史上推理有三个入口（HTTP API 线程、WebView JS 桥线程、shm 循环线程），
+         * 只有 HTTP 那个加了锁，于是「WorkBuddy 调模型」和「手机 UI 里聊天」
+         * 同时发生时就会随机闪退。
+         */
+        private val INFER_LOCK = Any()
     }
 
     private var mnnEngine: MnnEngine? = null
@@ -70,11 +95,36 @@ class AiService(
         try { mnnEngine?.close() } catch (_: Throwable) {}
     }
 
+    /**
+     * 截断过长的 prompt —— 这是防止原生崩溃的最后一道闸。
+     *
+     * 保留「开头 + 结尾」：开头通常是系统设定/规则，结尾是用户最近的问题，
+     * 中间冗长的历史对话信息量最低，优先舍弃。
+     */
+    private fun clampPrompt(prompt: String): String {
+        if (prompt.length <= MAX_PROMPT_CHARS) return prompt
+        val half = MAX_PROMPT_CHARS / 2
+        val head = prompt.substring(0, half)
+        val tail = prompt.substring(prompt.length - half)
+        diagLog("prompt 超长(${prompt.length}字符)，已截断至 $MAX_PROMPT_CHARS（防 MNN 越界崩溃）")
+        return head + "\n...[中间历史已省略]...\n" + tail
+    }
+
+    /**
+     * 唯一的推理入口：截断 + 全局串行。
+     * 所有调用方（HTTP API / WebView JS / shm 循环）都必须走这里。
+     */
+    private fun runInference(prompt: String): String {
+        val engine = mnnEngine ?: return ""
+        synchronized(INFER_LOCK) {
+            return engine.infer(clampPrompt(prompt), maxTokens) ?: ""
+        }
+    }
+
     /** 公开的同步推理方法（供 JS 接口直接调用）。 */
     fun inferSync(prompt: String): String? {
         return try {
-            val result = mnnEngine?.infer(prompt, maxTokens)
-            result
+            runInference(prompt)
         } catch (t: Throwable) {
             diagLog("同步推理异常: $t")
             null
@@ -120,7 +170,7 @@ class AiService(
         diagLog("收到推理请求 (${input.size}B): ${prompt.take(80)}")
         val t0 = System.currentTimeMillis()
         return try {
-            val result = mnnEngine?.infer(prompt, maxTokens) ?: ""
+            val result = runInference(prompt)
             val dt = System.currentTimeMillis() - t0
             val tokens = result.length / 4  /* 估算 token 数（1 token ≈ 4 chars） */
             val speed = if (dt > 0) "%.1f".format(tokens * 1000.0 / dt) else "?"

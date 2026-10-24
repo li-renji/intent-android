@@ -46,6 +46,14 @@ class LocalHttpServer(
         private const val MAX_REQ_BYTES = 256 * 1024      // 单请求上限 256KB
         private const val SOCKET_TIMEOUT_MS = 10_000
         private const val MAX_BODY_LOG = 120
+
+        // 各段消息进入 prompt 的字符配额（合计 < AiService.MAX_PROMPT_CHARS=1800）。
+        // MNN 在 prompt 超过模型 max_seq_len 时会原生越界崩溃（SIGSEGV，App 直接闪退），
+        // 且 prefill 耗时与长度线性相关（约 4.4ms/字符），所以必须按优先级裁剪：
+        // 系统规则开头 > 用户最后一句 > 最近助手回复 > 更早的历史。
+        private const val MAX_SYSTEM_CHARS = 500
+        private const val MAX_HISTORY_CHARS = 250
+        private const val MAX_LAST_USER_CHARS = 800
     }
 
     /** MNN 引擎不是线程安全的，所有推理串行化。 */
@@ -417,12 +425,28 @@ class LocalHttpServer(
         }
 
         val promptSb = StringBuilder()
-        for ((role, content) in messages) {
-            when (role) {
-                "system" -> promptSb.append("[系统] ").append(content).append('\n')
-                "assistant" -> promptSb.append("[助手] ").append(content).append('\n')
-                else -> promptSb.append(content).append('\n')
-            }
+        // 按消息粒度裁剪：本地小模型上下文有限，且 MNN 在 prompt 超长时会原生崩溃。
+        // 策略：system 保留开头（规则），最后一条 user 保留结尾（当前问题），
+        // 中间历史只留少量，避免把预算浪费在冗长系统提示词上。
+        val systemMsg = messages.firstOrNull { it.first == "system" }
+        val userMsgs = messages.filter { it.first == "user" }
+        val lastUser = userMsgs.lastOrNull()
+        val history = messages.filter { it.first == "assistant" }.takeLast(2)
+
+        systemMsg?.let { (role, content) ->
+            val head = content.take(MAX_SYSTEM_CHARS)
+            promptSb.append("[系统] ").append(head)
+            if (content.length > MAX_SYSTEM_CHARS) promptSb.append("…（已精简）")
+            promptSb.append('\n')
+        }
+        history.forEach { (role, content) ->
+            promptSb.append("[助手] ").append(content.take(MAX_HISTORY_CHARS)).append('\n')
+        }
+        userMsgs.dropLast(1).takeLast(1).forEach { (_, content) ->
+            promptSb.append("[用户] ").append(content.take(MAX_HISTORY_CHARS)).append('\n')
+        }
+        lastUser?.let { (_, content) ->
+            promptSb.append(content.take(MAX_LAST_USER_CHARS))
         }
         val prompt = promptSb.toString().trim()
         if (prompt.isBlank()) {
