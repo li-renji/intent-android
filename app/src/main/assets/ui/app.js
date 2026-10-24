@@ -404,6 +404,111 @@ function renderMessageList(container) {
     updateMsgBadge();
 }
 
+/**
+ * 模型下载控制器
+ * ---------------------------------------------------------------------------
+ * App 内置 ModelProvisioner（原生层实现）：多镜像源、断点续传、sha256 校验。
+ * 本模块只负责：发起下载、接收进度回调、渲染进度条。
+ */
+const ModelDownload = {
+    state: 'idle',       // idle|checking|downloading|verifying|done|failed
+    downloaded: 0,
+    total: 0,
+    speed: 0,
+    file: '',
+    error: null,
+    _bound: false,
+
+    bind() {
+        if (this._bound) return;
+        this._bound = true;
+        window.onModelProgress = (p) => {
+            this.state = p.state || 'idle';
+            this.downloaded = p.downloaded || 0;
+            this.total = p.total || 0;
+            this.speed = p.speed || 0;
+            this.file = p.file || '';
+            this.error = p.error || null;
+            this.render();
+        };
+    },
+
+    start() {
+        if (!window.Qidian || !Qidian.startModelDownload) {
+            alert('当前环境不支持模型下载');
+            return;
+        }
+        this.bind();
+        this.state = 'checking';
+        this.downloaded = 0;
+        this.error = null;
+        this.render();
+        Qidian.startModelDownload();
+    },
+
+    cancel() {
+        try { Qidian.cancelModelDownload && Qidian.cancelModelDownload(); } catch (e) { }
+    },
+
+    retry() {
+        this.start();
+    },
+
+    fmtSize(bytes) {
+        if (!bytes) return '0 B';
+        const mb = bytes / 1024 / 1024;
+        if (mb >= 1024) return (mb / 1024).toFixed(2) + ' GB';
+        return mb.toFixed(1) + ' MB';
+    },
+
+    render() {
+        const hint = document.getElementById('qd-mon-model-hint');
+        const slot = document.getElementById('qd-mon-model-btn-slot');
+        if (!hint) return;
+
+        const pct = this.total > 0 ? Math.floor(this.downloaded * 100 / this.total) : 0;
+        const eta = (this.speed > 0 && this.total > 0)
+            ? Math.max(0, Math.round((this.total - this.downloaded) / this.speed))
+            : -1;
+        const etaText = eta >= 0
+            ? (eta >= 60 ? Math.ceil(eta / 60) + ' 分钟' : eta + ' 秒')
+            : '估算中';
+
+        if (this.state === 'downloading') {
+            if (slot) {
+                slot.innerHTML =
+                    '<div style="margin-top:4px;">' +
+                    '<div style="display:flex;justify-content:space-between;font-size:var(--fs-sm);color:var(--text-secondary);margin-bottom:4px;">' +
+                    '<span>' + this.fmtSize(this.downloaded) + ' / ' + this.fmtSize(this.total) + '</span>' +
+                    '<span>' + pct + '% · ' + this.fmtSize(this.speed) + '/s · 剩余 ' + etaText + '</span>' +
+                    '</div>' +
+                    '<div style="height:6px;border-radius:3px;background:var(--bg-secondary);overflow:hidden;">' +
+                    '<div style="height:100%;width:' + pct + '%;background:var(--accent);transition:width .4s;"></div>' +
+                    '</div>' +
+                    '<button id="cancel-model-dl" style="margin-top:6px;padding:5px 12px;border-radius:6px;border:1px solid var(--border);background:transparent;color:var(--text-secondary);cursor:pointer;font-size:var(--fs-sm);">取消</button>' +
+                    '</div>';
+                document.getElementById('cancel-model-dl')?.addEventListener('click', () => ModelDownload.cancel());
+            }
+            hint.innerHTML = '正在下载模型…支持断点续传，中断后点击重试可继续，不会重新下载。';
+        } else if (this.state === 'verifying') {
+            if (slot) slot.innerHTML = '<span style="color:var(--text-secondary);font-size:var(--fs-sm);">校验中…</span>';
+            hint.innerHTML = '正在校验文件完整性（SHA-256），请勿关闭应用。';
+        } else if (this.state === 'checking') {
+            if (slot) slot.innerHTML = '<span style="color:var(--text-secondary);font-size:var(--fs-sm);">准备下载…</span>';
+            hint.innerHTML = '正在检查设备环境与存储空间…';
+        } else if (this.state === 'failed') {
+            if (slot) {
+                slot.innerHTML = '<button id="retry-model-dl" style="padding:8px 14px;border-radius:6px;border:none;background:var(--accent);color:white;cursor:pointer;font-size:var(--fs-sm);">↻ 重试下载</button>';
+                document.getElementById('retry-model-dl')?.addEventListener('click', () => ModelDownload.retry());
+            }
+            hint.innerHTML = '<span style="color:var(--error);">下载失败：' + (this.error || '未知错误') + '</span><br>已下载部分会保留，重试将从断点继续。';
+        } else if (this.state === 'done') {
+            if (slot) slot.innerHTML = '<span style="color:var(--success);font-size:var(--fs-sm);">✓ 模型就绪</span>';
+            hint.innerHTML = '模型已下载并校验通过，正在本地运行。';
+        }
+    }
+};
+
 function renderContactList(container) {
     // AI 助手分组
     container.appendChild(createGroupHeader('AI 助手'));
@@ -1280,17 +1385,13 @@ function openSettingDetail(setting) {
             if (slot && slot.dataset.state !== String(snap.modelExists)) {
                 slot.dataset.state = String(snap.modelExists);
                 if (snap.modelExists === false) {
-                    slot.innerHTML = '<button id="download-model-btn" style="padding:8px 14px;border-radius:6px;border:none;background:var(--accent);color:white;cursor:pointer;font-size:var(--fs-sm);">⬇️ 去阿里官网下载</button>';
+                    slot.innerHTML = '<button id="download-model-btn" style="padding:8px 14px;border-radius:6px;border:none;background:var(--accent);color:white;cursor:pointer;font-size:var(--fs-sm);">⬇️ 一键下载模型（792MB）</button>';
                     setTimeout(() => {
                         document.getElementById('download-model-btn')?.addEventListener('click', () => {
-                            if (window.Qidian && Qidian.openExternalUrl) {
-                                Qidian.openExternalUrl('https://modelscope.cn/models/Qwen/Qwen2.5-1.5B-Instruct');
-                            } else {
-                                openInternalBrowser('https://modelscope.cn/models/Qwen/Qwen2.5-1.5B-Instruct');
-                            }
+                            ModelDownload.start();
                         });
                     }, 50);
-                    set('qd-mon-model-hint', '模型未下载，点击上方按钮前往阿里 ModelScope 下载 Qwen2.5-1.5B 模型。<br>下载后需转换为 MNN 格式并放置到模型目录。');
+                    set('qd-mon-model-hint', '首次使用需下载本地模型（Qwen2.5-1.5B · MNN，约 792MB）。<br>点击上方按钮即可自动下载，支持断点续传与多镜像加速；下载完成后模型会在手机本地运行，不上传任何数据。');
                 } else {
                     slot.innerHTML = fileOk ? '<span style="color:var(--success);font-size:var(--fs-sm);">✓ 文件就绪</span>' : '';
                     set('qd-mon-model-hint', '');
@@ -1497,7 +1598,7 @@ function openSettingDetail(setting) {
                     </div>
                 </div>
                 ${!modelInfo.exists ? `
-                    <button id="download-local-model" style="width:100%;margin-top:8px;padding:8px;border-radius:6px;border:none;background:var(--accent);color:white;cursor:pointer;font-size:var(--fs-sm);">⬇️ 下载本地模型（阿里官网）</button>
+                    <button id="download-local-model" style="width:100%;margin-top:8px;padding:8px;border-radius:6px;border:none;background:var(--accent);color:white;cursor:pointer;font-size:var(--fs-sm);">⬇️ 一键下载本地模型（792MB）</button>
                 ` : ''}
                 <div class="perm-item" style="cursor:pointer;margin-top:8px;" id="model-cloud">
                     <div>
@@ -1547,12 +1648,8 @@ function openSettingDetail(setting) {
                 openSettingDetail(setting);
             });
             document.getElementById('download-local-model')?.addEventListener('click', () => {
-                // 用外部浏览器打开
-                if (window.Qidian && Qidian.openExternalUrl) {
-                    Qidian.openExternalUrl('https://modelscope.cn/models/Qwen/Qwen2.5-1.5B-Instruct');
-                } else {
-                    openInternalBrowser('https://modelscope.cn/models/Qwen/Qwen2.5-1.5B-Instruct');
-                }
+                ModelDownload.bind();
+                ModelDownload.start();
             });
             document.getElementById('model-cloud')?.addEventListener('click', () => {
                 const config = JSON.parse(localStorage.getItem('cloud_api_config') || '{}');

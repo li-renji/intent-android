@@ -332,6 +332,7 @@ class LocalHttpServer(
                 }
             }
             path == "/status" -> writeJson(out, 200, healthJson())
+            path == "/model/status" -> writeJson(out, 200, modelProvisionJson())
             else -> writeJson(
                 out, 404,
                 """{"ok":false,"error":"not_found","hint":"可用端点：GET /health，GET /，POST /chat，POST /v1/chat/completions（OpenAI 兼容）"}"""
@@ -672,13 +673,63 @@ class LocalHttpServer(
         return """{"ok":true,"service":"qidian-minios","version":"3.0","ai":${ai != null},"model":"$modelName","uptime":${uptimeSec()},"chats":${chatCount.get()},"errors":${errorCount.get()},"http_port":$boundHttpPort,"status_port":$boundStatusPort,"lan":"$ip:$boundHttpPort"}"""
     }
 
+    /** 模型 provisioning 状态（供外部部署/监控查询首次下载进度） */
+    private fun modelProvisionJson(): String {
+        fun esc(s: String?) = s?.replace("\\", "\\\\")?.replace("\"", "\\\"")?.replace("\n", " ") ?: ""
+        val st = MainActivity.modelDownloadState
+        val total = MainActivity.modelDownloadTotalBytes
+        val got = MainActivity.modelDownloadedBytes
+        val pct = if (total > 0) (got * 100 / total).toInt() else 0
+        return """{"ok":true,"state":"$st","percent":$pct,"downloaded":$got,"total":$total,"speed":${MainActivity.modelDownloadSpeed},"file":"${esc(MainActivity.modelDownloadFile)}","error":"${esc(MainActivity.modelDownloadError)}","model":"$modelName"}"""
+    }
+
+    /**
+     * 取本机可被外部访问的局域网 IP。
+     *
+     * 必须优先选 wlan0 / 常规 WiFi 网卡，不能"随机挑一个接口"：
+     * 早期版本用 NetworkInterface 遍历的第一个 IPv4，vivo 等设备上会取到
+     * p2p0（WiFi Direct 虚拟接口，典型 192.168.49.1），该地址只在手机上自洽，
+     * 电脑上根本路由不到 —— 用户照着显示的地址连接必然超时。
+     * 现在按优先级筛选：wlan0 > eth/usb > 其他物理网卡 > 最后才放弃用虚拟接口。
+     */
     private fun localIp(): String = try {
-        java.net.NetworkInterface.getNetworkInterfaces().toList()
-            .asSequence()
+        val ifaces = java.net.NetworkInterface.getNetworkInterfaces().toList()
             .filter { it.isUp && !it.isLoopback }
-            .flatMap { it.inetAddresses.toList().asSequence() }
-            .firstOrNull { it is java.net.Inet4Address && !it.isLoopbackAddress }
-            ?.hostAddress ?: "127.0.0.1"
+
+        fun ipv4s(nic: java.net.NetworkInterface) = nic.inetAddresses.toList()
+            .filterIsInstance<java.net.Inet4Address>()
+            .filter { !it.isLoopbackAddress && !it.isLinkLocalAddress }
+
+        // 1) 名字精确匹配 wlan0 / wifi
+        val byName = ifaces.firstOrNull {
+            val n = it.name.lowercase()
+            n == "wlan0" || n == "wlan1" || n.startsWith("wifi")
+        }
+        // 2) 有线 / USB 网络
+        val byWired = ifaces.firstOrNull {
+            val n = it.name.lowercase()
+            n.startsWith("eth") || n.startsWith("usb") || n.startsWith("en")
+        }
+        // 3) 其他物理网卡（排除点对点/虚拟）
+        val byPhysical = ifaces.firstOrNull {
+            val n = it.name.lowercase()
+            !n.startsWith("p2p") && !n.startsWith("ap") && !n.startsWith("tun") &&
+            !n.startsWith("rmnet") && !n.startsWith("ccmni") && !n.startsWith("docker") &&
+            !n.startsWith("vethernet") && !n.startsWith("swlan")
+        }
+
+        val chosen = byName ?: byWired ?: byPhysical
+        chosen?.let { nic -> ipv4s(nic).firstOrNull()?.hostAddress }
+            // 4) 兜底：排除明显的虚拟/点对点接口后再找
+            ?: ifaces.firstOrNull {
+                val n = it.name.lowercase()
+                !n.startsWith("p2p") && !n.startsWith("rmnet") && !n.startsWith("ccmni")
+            }?.let { nic -> ipv4s(nic).firstOrNull()?.hostAddress }
+            // 5) 最后兜底：任何 IPv4（宁可给不可用地址也不要空）
+            ?: ifaces.asSequence()
+                .flatMap { ipv4s(it).asSequence() }
+                .firstOrNull()?.hostAddress
+            ?: "127.0.0.1"
     } catch (_: Throwable) {
         "127.0.0.1"
     }

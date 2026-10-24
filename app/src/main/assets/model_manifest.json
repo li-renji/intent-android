@@ -1,0 +1,49 @@
+{
+  "_comment": "模型清单。运维改版本只改这个文件，不需要改代码。mirrors 按顺序尝试，失败自动切换下一个。",
+  "name": "qwen2.5-1.5b-mnn",
+  "version": "2026.09.14",
+  "total_bytes": 830802797,
+  "sha256": "",
+  "mirrors": [
+    "https://cdn.qidian-os.com/models/qwen2.5-1.5b-mnn",
+    "https://oss-cn-beijing.aliyuncs.com/qidian-os/models/qwen2.5-1.5b-mnn",
+    "https://modelscope.cn/models/Qwen/Qwen2.5-1.5B-Instruct/resolve/master"
+  ],
+  "files": [
+    {
+      "path": "config.json",
+      "bytes": 523,
+      "sha256": ""
+    },
+    {
+      "path": "export_args.json",
+      "bytes": 1411,
+      "sha256": ""
+    },
+    {
+      "path": "llm.mnn",
+      "bytes": 1320024,
+      "sha256": ""
+    },
+    {
+      "path": "llm.mnn.json",
+      "bytes": 3183606,
+      "sha256": ""
+    },
+    {
+      "path": "llm_config.json",
+      "bytes": 3178,
+      "sha256": ""
+    },
+    {
+      "path": "tokenizer.mtok",
+      "bytes": 4109686,
+      "sha256": ""
+    },
+    {
+      "path": "llm.mnn.weight",
+      "bytes": 820955378,
+      "sha256": ""
+    }
+  ]
+}

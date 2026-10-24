@@ -49,6 +49,16 @@ class MainActivity : Activity() {
         @Volatile private var containerStarted = false
         @Volatile private var bootLock = Any()
 
+        // ===== 模型自动下载状态（进程级，供 JS 与 HTTP 读取）=====
+        @Volatile var modelProvision: ModelProvisioner? = null
+        @Volatile var modelDownloadState: String = "idle"   // idle|checking|downloading|verifying|done|failed
+        @Volatile var modelDownloadError: String? = null
+        @Volatile var modelDownloadedBytes: Long = 0
+        @Volatile var modelDownloadTotalBytes: Long = 0
+        @Volatile var modelDownloadSpeed: Long = 0
+        @Volatile var modelDownloadFile: String = ""
+        @Volatile var modelDownloadStartedAt: Long = 0
+
         // 投屏授权全局变量
         @Volatile
         var castResultCodeGlobal = 0
@@ -326,6 +336,83 @@ class MainActivity : Activity() {
         }
     }
 
+    /**
+     * 确保模型就绪：读取 assets 清单 → 自动下载 → 校验。
+     * 阻塞调用（已在后台线程中）。
+     * @return true 表示模型可用
+     */
+    internal fun ensureModelProvisioned(diag: File): Boolean {
+        try {
+            val raw = assets.open("model_manifest.json").use { it.readBytes().toString(Charsets.UTF_8) }
+            val manifest = ModelProvisioner.loadManifest(raw)
+            val modelDir = File(filesDir, "models/${manifest.name}")
+            val provisioner = ModelProvisioner(modelDir, manifest) { p ->
+                modelDownloadState = when (p.phase) {
+                    ModelProvisioner.Progress.Phase.CHECKING -> "checking"
+                    ModelProvisioner.Progress.Phase.DOWNLOADING -> "downloading"
+                    ModelProvisioner.Progress.Phase.VERIFYING -> "verifying"
+                    ModelProvisioner.Progress.Phase.DONE -> "done"
+                    ModelProvisioner.Progress.Phase.FAILED,
+                    ModelProvisioner.Progress.Phase.NO_SPACE -> "failed"
+                    else -> "idle"
+                }
+                modelDownloadError = p.error
+                modelDownloadedBytes = p.downloaded
+                modelDownloadTotalBytes = p.total
+                modelDownloadSpeed = p.bytesPerSec
+                modelDownloadFile = p.fileName
+                notifyModelProgress()
+            }
+            modelProvision = provisioner
+
+            if (provisioner.isReady()) {
+                diag.appendText("模型已就绪，跳过下载\n")
+                modelDownloadState = "done"
+                return true
+            }
+
+            modelDownloadStartedAt = System.currentTimeMillis()
+            modelDownloadState = "checking"
+            notifyModelProgress()
+
+            val err = provisioner.provision()
+            if (err != null) {
+                modelDownloadState = "failed"
+                modelDownloadError = err
+                diag.appendText("模型下载失败: $err\n")
+                notifyModelProgress()
+                return false
+            }
+            diag.appendText("模型下载并校验完成\n")
+            return true
+        } catch (t: Throwable) {
+            val msg = "模型初始化异常：${t.message}"
+            modelDownloadState = "failed"
+            modelDownloadError = msg
+            diag.appendText("$msg\n")
+            Log.e(TAG, msg, t)
+            notifyModelProgress()
+            return false
+        }
+    }
+
+    /** 把下载进度推给 WebView */
+    internal fun notifyModelProgress() {
+        runOnUiThread {
+            try {
+                val js = "window.onModelProgress && window.onModelProgress(" +
+                    "{state:'$modelDownloadState'," +
+                    "downloaded:$modelDownloadedBytes," +
+                    "total:$modelDownloadTotalBytes," +
+                    "speed:$modelDownloadSpeed," +
+                    "file:'${modelDownloadFile.replace("'", "")}'," +
+                    "error:${modelDownloadError?.let { "'" + it.replace("'", "") + "'" } ?: "null"}})"
+                webView.evaluateJavascript(js, null)
+            } catch (_: Throwable) {
+            }
+        }
+    }
+
     /** 后台启动容器 + AI 服务 */
     private fun startContainerInBackground() {
         Thread {
@@ -355,8 +442,22 @@ class MainActivity : Activity() {
                         null
                     }
                 } else {
-                    diag.appendText("MNN 模型目录未就绪，使用占位推理\n")
-                    null
+                    // 模型缺失：首次启动自动下载（联网即可，无需用户手动操作）
+                    diag.appendText("MNN 模型缺失，启动自动下载流程\n")
+                    val ok = ensureModelProvisioned(diag)
+                    if (ok) {
+                        val svc = AiService(this, mnnModelDir, shmFile!!, maxTokens = 256)
+                        if (svc.start(diag)) {
+                            diag.appendText("模型下载完成，原生 AI 服务(MNN)已启动\n")
+                            svc
+                        } else {
+                            diag.appendText("原生 AI 服务启动失败\n")
+                            null
+                        }
+                    } else {
+                        diag.appendText("模型未就绪：${modelDownloadError ?: "未知原因"}\n")
+                        null
+                    }
                 }
 
                 // 解压 rootfs
@@ -608,6 +709,55 @@ class MainActivity : Activity() {
             val exists = weightFile.exists() && configFile.exists()
             val sizeMB = if (weightFile.exists()) weightFile.length() / 1024 / 1024 else 0
             return "{\"exists\":$exists,\"sizeMB\":$sizeMB,\"path\":\"${modelDir.absolutePath}\"}"
+        }
+
+        /** 模型下载状态快照（供 UI 展示进度） */
+        @JavascriptInterface
+        fun getModelDownloadState(): String {
+            val pct = if (MainActivity.modelDownloadTotalBytes > 0)
+                (MainActivity.modelDownloadedBytes * 100 / MainActivity.modelDownloadTotalBytes).toInt()
+            else 0
+            return "{\"state\":\"${MainActivity.modelDownloadState}\"," +
+                "\"downloaded\":${MainActivity.modelDownloadedBytes}," +
+                "\"total\":${MainActivity.modelDownloadTotalBytes}," +
+                "\"speed\":${MainActivity.modelDownloadSpeed}," +
+                "\"percent\":$pct," +
+                "\"file\":\"${MainActivity.modelDownloadFile.replace("'", "")}\"," +
+                "\"error\":${MainActivity.modelDownloadError?.let { "\"" + it.replace("\"", "").replace("'", "") + "\"" } ?: "null"}}"
+        }
+
+        /** 手动触发模型下载（UI 的「重试下载」按钮） */
+        @JavascriptInterface
+        fun startModelDownload() {
+            activity.runOnUiThread {
+                MainActivity.modelDownloadError = null
+                MainActivity.modelDownloadState = "checking"
+                activity.notifyModelProgress()
+                Thread {
+                    activity.ensureModelProvisioned(File(activity.filesDir, "diag.txt"))
+                }.apply { name = "model-provision"; start() }
+            }
+        }
+
+        /** 取消下载 */
+        @JavascriptInterface
+        fun cancelModelDownload() {
+            MainActivity.modelProvision?.cancel()
+        }
+
+        /** 环境自检结果：null 表示通过，否则返回给用户看的说明 */
+        @JavascriptInterface
+        fun checkEnvironment(): String {
+            return try {
+                val raw = activity.assets.open("model_manifest.json").use { it.readBytes().toString(Charsets.UTF_8) }
+                val manifest = ModelProvisioner.loadManifest(raw)
+                val modelDir = java.io.File(activity.filesDir, "models/${manifest.name}")
+                val err = ModelProvisioner(modelDir, manifest) {}.preflight()
+                if (err == null) "{\"ok\":true,\"error\":null}"
+                else "{\"ok\":false,\"error\":\"$err\"}"
+            } catch (t: Throwable) {
+                "{\"ok\":false,\"error\":\"自检异常: ${t.message}\"}"
+            }
         }
 
         @JavascriptInterface
