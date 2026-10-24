@@ -1167,7 +1167,7 @@ function openChat(chat) {
 
     header.innerHTML = `<span>${chat.avatar} ${chat.name}</span>`;
     body.innerHTML = '';
-    footer.style.display = 'flex';
+    renderChatFooter();
 
     // 渲染历史消息
     chat.messages.forEach(msg => appendMessage({ role: msg.role, content: msg.content, thinking: msg.thinking }));
@@ -2176,6 +2176,43 @@ function openFileEditor(filename) {
 }
 
 // ========== 聊天功能（异步，不卡顿） ==========
+// 打开聊天时重建页脚（联网开关 + 输入框 + 发送），并重新绑定事件。
+// 原因：去「知识库/界面编辑/PC桥」等页面时 footer.innerHTML 会被覆盖，
+// 回到聊天后若只靠 display 恢复，按钮会丢失事件绑定甚至整段消失。
+function renderChatFooter() {
+    const footer = document.getElementById('content-footer');
+    if (!footer) return;
+    footer.innerHTML = `
+        <button id="web-search-toggle" class="web-search-toggle" type="button" title="联网搜索">🌐 联网</button>
+        <input type="text" id="message-input" placeholder="输入消息..." autocomplete="off">
+        <button id="send-btn" type="button">发送</button>`;
+    footer.style.display = 'flex';
+
+    const wsToggle = document.getElementById('web-search-toggle');
+    const input = document.getElementById('message-input');
+    const sendBtn = document.getElementById('send-btn');
+
+    function updateWebSearchBtn() {
+        if (!wsToggle) return;
+        wsToggle.classList.toggle('on', webSearchEnabled);
+        wsToggle.title = webSearchEnabled ? '联网搜索：开（点按关闭）' : '联网搜索：关（点按开启）';
+        wsToggle.setAttribute('aria-pressed', webSearchEnabled ? 'true' : 'false');
+    }
+    if (wsToggle) {
+        wsToggle.addEventListener('click', () => {
+            webSearchEnabled = !webSearchEnabled;
+            try { localStorage.setItem('web_search_enabled', webSearchEnabled ? '1' : '0'); } catch (e) { }
+            updateWebSearchBtn();
+            qdToast(webSearchEnabled ? '🌐 联网搜索：已开启' : '🌐 联网搜索：已关闭');
+        });
+        updateWebSearchBtn();
+    }
+    if (sendBtn) sendBtn.addEventListener('click', sendMessage);
+    if (input) input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+    });
+}
+
 function setupChatInput() {
     const input = document.getElementById('message-input');
     const sendBtn = document.getElementById('send-btn');
